@@ -22,7 +22,10 @@
       "Bash(npx allure *)",
       "Bash([ -f \"$STATE_FILE\" ])",
       "Bash(mkdir *)",
-      "Read(//home/taha/.cache/ms-playwright/**)"
+      "Read(//home/taha/.cache/ms-playwright/**)",
+      "Bash(/home/taha/Desktop/claude-mac-qa-skills/qa/node_modules/.bin/playwright test *)",
+      "Bash(chmod +x /home/taha/Desktop/claude-mac-qa-skills/qa/node_modules/.bin/playwright)",
+      "Bash(chmod +x /home/taha/Desktop/claude-mac-qa-skills/qa/node_modules/.bin/playwright-chromium)"
     ]
   }
 }

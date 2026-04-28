@@ -105,7 +105,7 @@ import { defineConfig, devices } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
 
-const dotenvPath = path.resolve(process.cwd(), '.env.qa');
+const dotenvPath = path.resolve(__dirname, '..', '.env.qa');
 if (fs.existsSync(dotenvPath)) {
   require('dotenv').config({ path: dotenvPath });
 } else {
@@ -117,7 +117,8 @@ if (!process.env.QA_APP_URL) {
 const HEADLESS = process.env.QA_HEADLESS !== 'false';
 
 const CI = !!process.env.CI;
-const REPO_ROOT = process.cwd();
+// __dirname = qa/ directory; REPO_ROOT is always its parent regardless of cwd
+const REPO_ROOT = path.resolve(__dirname, '..');
 const AUTH_FILE = path.join(REPO_ROOT, 'qa/.auth/user.json');
 
 export default defineConfig({
@@ -621,7 +622,7 @@ After credentials resolved → **create `qa/auth.setup.ts`** so Playwright's `se
 import { test as setup, expect } from '@playwright/test';
 import path from 'path';
 
-const AUTH_FILE = path.join(process.cwd(), 'qa/.auth/user.json');
+const AUTH_FILE = path.join(__dirname, '.auth/user.json');
 
 setup('authenticate', async ({ page }) => {
   await page.goto(process.env.QA_APP_URL || '/');
@@ -739,16 +740,23 @@ For each flow in `qa/flows/`, read `flow.md` and generate ALL scenarios using th
 ```typescript
 // qa/journeys/J-001-member.spec.ts
 import { test, expect } from '@playwright/test';
+import { AxeBuilder } from '@axe-core/playwright';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as dotenv from 'dotenv';
-dotenv.config({ path: '../.env.qa' });
+dotenv.config({ path: require('path').resolve(__dirname, '../../.env.qa') });
+
+const BASELINE_DIR = path.resolve(__dirname, '../../qa/knowledgebase/visual-baselines');
+const BASELINE_PATH = path.join(BASELINE_DIR, 'visual-baseline.png');
 
 // All member-role scenarios in session order
-test.use({ storageState: 'qa/.auth/member.json' });
+// storageState path is relative to rootDir (= qa/) — do NOT prefix with 'qa/'
+test.use({ storageState: '.auth/member.json' });
 
 // ── F-001: [Flow Name] ────────────────────────────────────────────
 test.describe('F-001: [Flow Name]', () => {
 
-  test('S-001-01: [happy path scenario]', async ({ page }) => {
+  test('S-001-01: [happy path scenario]', async ({ page, context }) => {
     await page.goto('/path', { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => document.body.innerText.length > 50, { timeout: 15000 }).catch(() => {});
     // locators from snapshot: dom.buttons[name="Submit"], dom.inputs[placeholder="Email"]
@@ -756,7 +764,7 @@ test.describe('F-001: [Flow Name]', () => {
     await expect(page.getByRole('heading', { name: 'Success' })).toBeVisible();
   });
 
-  test('S-001-02: [negative / edge case]', async ({ page }) => {
+  test('S-001-02: [negative / edge case]', async ({ page, context }) => {
     await page.goto('/path', { waitUntil: 'domcontentloaded' });
     await page.getByLabel('Email').fill('not-an-email');
     await page.getByRole('button', { name: 'Submit' }).click();
@@ -781,6 +789,15 @@ Also write for anonymous/unauthenticated scenarios:
 ```typescript
 // qa/journeys/J-000-anonymous.spec.ts
 import { test, expect } from '@playwright/test';
+import { AxeBuilder } from '@axe-core/playwright';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as dotenv from 'dotenv';
+dotenv.config({ path: require('path').resolve(__dirname, '../../.env.qa') });
+
+const BASELINE_DIR = path.resolve(__dirname, '../../qa/knowledgebase/visual-baselines');
+const BASELINE_PATH = path.join(BASELINE_DIR, 'visual-baseline.png');
+
 // No storageState — unauthenticated tests only
 
 test.describe('F-001: Public landing', () => {
@@ -798,13 +815,13 @@ const args    = process.argv.slice(2);
 const journey = args[args.indexOf('--journey') + 1];
 
 console.log('→ Installing dependencies...');
-execSync('npm install --silent',                    { stdio: 'inherit', cwd: __dirname });
-execSync('npx playwright install chromium --quiet', { stdio: 'inherit', cwd: __dirname });
+execSync('npm install --silent',                                                       { stdio: 'inherit', cwd: __dirname });
+execSync('node ./node_modules/playwright/cli.js install chromium --quiet', { stdio: 'inherit', cwd: __dirname });
 
 const grep = journey ? \`--grep "J-\${journey}"\` : '';
 console.log(\`→ Running journeys/ \${grep || '(all)'}\`);
 execSync(
-  \`npx playwright test journeys/ \${grep} --config playwright.config.ts --reporter=html --continue-on-failure\`,
+  \`node ./node_modules/playwright/cli.js test journeys/ \${grep} --config playwright.config.ts --reporter=html --continue-on-failure\`,
   { stdio: 'inherit', cwd: __dirname }
 );
 `;
@@ -861,7 +878,7 @@ Write `qa/run-state.md` before running (the run todo — ≤30 lines total):
 
 Then for each journey row, in order:
 1. Update row status → `⏳ running`
-2. `npx playwright test qa/journeys/J-NNN-*.spec.ts --config qa/playwright.config.ts --reporter=line --continue-on-failure`
+2. `cd qa && node ./node_modules/playwright/cli.js test journeys/J-NNN-*.spec.ts --config playwright.config.ts --reporter=line --continue-on-failure`
 3. Parse exit code + first failure line from stdout
 4. Update row → `✅ done` or `❌ failed([test name]: [first-failure-text])`
 
