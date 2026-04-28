@@ -8,11 +8,13 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 1. Asking which platform to test (macOS, Web, Windows, iOS, Android)
 2. Initializing a typed QA workspace (flow-based / feature-based / risk-based)
-3. Reading prior knowledge from `qa/context/` or discovering the app visually
-4. **Phase 1** — Seed crawl → build navigation graph → discover user personas → derive E2E journeys (persona + goal + path) → trace each journey end-to-end with screenshots at every action → write `flow.md` per journey → save state checkpoints
-5. **Phase 2** — After user provides credentials, tracing auth-gated journeys and generating full test coverage: all scenarios + `TC-NNN-*.md` files with runnable automation scripts
+3. Reading prior knowledge from `qa/context/` or discovering the app via DOM/ARIA snapshots (web) or screenshots (macOS)
+4. **Phase 1** — Seed crawl → DOM/ARIA snapshots (web) / screenshots (macOS) → nav graph → personas → E2E journeys → `flow.md` per journey → state checkpoints
+5. **Phase 2** — After credentials provided, trace auth-gated flows → generate `scenarios.md` per flow
+6. **Phase 3** — Write shippable journey specs to `qa/journeys/J-NNN-<role>.spec.ts` (single source of truth — no TC markdown files, no separate specs/ directory)
+7. **Phase 4** — Run `qa/journeys/` → pass/fail report
 
-Context is reset after each journey (screenshots fill context fast). A state file `qa/state.md` persists all knowledge across resets.
+Context is reset after each journey (DOM snapshots and accumulated tool output fill context). A state file `qa/state.md` persists all knowledge across resets.
 
 **Platform support**:
 - macOS ✅ production — AppleScript + screencapture + Accessibility API
@@ -105,7 +107,7 @@ Exploration scripts are **inlined in each platform's SKILL.md** — not standalo
 The explore script is inlined in `skills/macos/SKILL.md` (Step 5). At runtime the agent writes it to `qa/scripts/explore.py` and runs it. No pip dependencies — uses stdlib only (`subprocess`, `json`, `argparse`, `plistlib`).
 
 ### Web
-Playwright is the web tool. **Which exploration strategy** runs is picked per-app based on the fingerprint — see `skills/web/strategies/` for the menu (bfs, targeted-trace, sitemap-spot-check). The chosen strategy's code skeleton is copied into `qa/scripts/<strategy>.js` at runtime, adapted to the observed app, and dispatched through `qa/scripts/explore.js`. Every script carries a three-line header (Why / Strategy / Fallback); every update requires a matching `qa/decisions.md` entry. The agent takes screenshots, reads them, and decides the next action.
+Playwright is the web tool. **Which exploration strategy** runs is picked per-app based on the fingerprint — see `skills/web/strategies/` for the menu (bfs, targeted-trace, sitemap-spot-check). The chosen strategy's code skeleton is copied into `qa/scripts/<strategy>.js` at runtime, adapted to the observed app, and dispatched through `qa/scripts/explore.js`. Every script carries a three-line header (Why / Strategy / Fallback); every update requires a matching `qa/decisions.md` entry. The agent calls `snapshotPage()` after each navigation to get a DOM/ARIA snapshot and decides the next action from the structured JSON — no image reading.
 
 ---
 
@@ -143,18 +145,18 @@ The skill detects its mode after platform selection:
 5. **Discover personas** from auth boundaries, plan tiers, feature sections
 6. **Derive E2E journeys** (persona + goal + path through the app = one flow)
 7. Present journey inventory to user for confirmation
-8. Trace each journey end-to-end with screenshots at every action (use `capture()` for atomic registration)
+8. Trace each journey end-to-end with `snapshotPage()` after every action (web: DOM/ARIA JSON; macOS: screenshot)
 9. Write `flow.md` with 5-column discovery evidence table (Step | Page/Screen | Action | Screenshot | Observed)
 10. Save checkpoint to `qa/state.md` → context reset
 11. **Screenshot coverage gate** — every screenshot on disk must be referenced in a flow.md
 12. **Generate report** (`npm run qa:report:open`) — one unified report with Product name, opens in browser
 
 **Phase 2 core loop** (Steps 8–9):
-1. Read auth screenshots from Phase 1 to identify credential fields
+1. Read auth-gate DOM/ARIA snapshots from Phase 1 to identify credential fields and login flow
 2. Ask user how to provide credentials (check `.env.qa` / provide in chat / self-register)
-3. Trace auth-gated flows with screenshots
+3. Trace auth-gated flows with DOM/ARIA snapshots
 4. Generate all scenarios per flow
-5. Write `TC-NNN-*.md` per scenario
+5. Write journey specs to `qa/journeys/J-NNN-<role>.spec.ts` — one per role, all scenarios as `test.describe` blocks
 6. **Generate report** (`npm run qa:report:open`) — same unified report, now includes all 4 phases
 
 ---
@@ -167,6 +169,9 @@ The skill detects its mode after platform selection:
 qa/
 ├── .qa-config.json              ← Workspace config (platform, framework, app, counts)
 ├── state.md                     ← Session checkpoint — one global state file
+├── run.js                       ← Cross-platform runner (node qa/run.js)
+├── package.json                 ← Self-contained deps for qa/ (generated in Phase 3)
+├── playwright.config.ts         ← Points testDir at qa/journeys/
 ├── planning/platforms.md
 ├── guardrails/do-and-dont.md
 ├── credentials/access.md
@@ -180,13 +185,15 @@ qa/
 │   ├── nav-graph.md             ← Navigation graph (page → CTA → page)
 │   ├── personas.md              ← Discovered user personas
 │   ├── journey-inventory.md     ← All E2E journeys with coverage tracking
-│   └── screenshots/             ← Discovery screenshots (gitignored)
+│   └── aria-snapshots/          ← DOM/ARIA snapshot JSON per visited page (web; gitignored)
+├── journeys/                    ← SHIPPABLE TEST SUITE — single source of truth
+│   ├── J-000-anonymous.spec.ts  ← All unauthenticated scenarios
+│   ├── J-001-member.spec.ts     ← All member-role scenarios (test.describe per flow)
+│   └── J-NNN-<role>.spec.ts
 └── flows/
     └── F-NNN-[flow-slug]/
-        ├── flow.md              ← Journey map + discovery evidence table
-        ├── scenarios.md         ← All test scenarios for this flow
-        └── test-cases/
-            └── TC-NNN-[slug].md ← One file per scenario
+        ├── flow.md              ← Journey map + DOM/ARIA discovery evidence table
+        └── scenarios.md         ← All test scenarios for this flow (documentation only)
 ```
 
 ### Feature-based
@@ -211,10 +218,9 @@ Three session artefacts carry context across resets. All three are cheap to re-r
 | `qa/progress.jsonl` | **Append-only step ledger** | One line per step event (≤150 bytes) — `{ts,flow,step,action,url,outcome}`. Resume reads `tail -n 30` only; never full-read. Committed (audit trail). |
 | `qa/flows/F-NNN-*/manifest.jsonl` | **Per-flow planned-step checklist** | One line per planned step with mutable `status` (`pending` / `done` / `skipped(reason)` / `blocked(reason)`). The agent drives every line to terminal status before advancing — see `skills/_shared/engagement-protocol.md` → *End-to-End Completion is Mandatory*. Resume: `grep -v '"status":"done"'` picks the next step. |
 | `qa/run-state.md` | **Run-time todos** | One row per journey (`⬜ pending` → `⏳ running` → `✅ done` / `❌ failed`). Written before the run, updated after each journey. Never rewritten in full — only the status cell changes. On re-trigger, agent skips `✅` rows and resumes from the first non-done row. |
-| `qa/journeys/J-NNN-*.spec.ts` | Generated at W-11 | Chained end-to-end journey per role — all TCs share one browser context + `storageState`. Shippable as-is. |
-| `qa/specs/TC-NNN-*.spec.ts` | Generated at W-11 | Flat per-TC specs; runnable individually. |
-| `qa/run.js` | Generated at W-11 | Cross-platform Node.js runner (Mac / Linux / Windows). No shell scripts. |
-| `qa/package.json` | Generated at W-11 | Self-contained deps (`@playwright/test`, `dotenv`); makes `qa/` independently runnable after `npm install`. |
+| `qa/journeys/J-NNN-*.spec.ts` | Generated in Phase 3 (W-10) | One journey per role — all scenarios organized as `test.describe` blocks per flow. **Single source of truth** — no separate specs/ or TC-*.md files. Shippable as-is. |
+| `qa/run.js` | Generated in Phase 3 (W-10) | Cross-platform Node.js runner (Mac / Linux / Windows). Runs `qa/journeys/`. No shell scripts. |
+| `qa/package.json` | Generated in Phase 3 (W-10) | Self-contained deps (`@playwright/test`, `dotenv`); makes `qa/` independently runnable after `npm install`. |
 
 Strategy-specific resume artefacts (e.g. `qa/crawl-state.json` for BFS, `qa/trace-state.json` for targeted-trace) are owned by the platform skill and auto-saved after every page so mid-strategy resume is free.
 
@@ -234,12 +240,12 @@ Strategy-specific resume artefacts (e.g. `qa/crawl-state.json` for BFS, `qa/trac
 | `skills/macos/templates/flow.md` | Template for every `flow.md` (macOS) |
 | `skills/web/templates/flow.md` | Template for every `flow.md` (web) — includes 5-col evidence table for E2E journeys |
 | `skills/web/templates/scenarios.md` | Template for every `scenarios.md` |
-| `skills/web/templates/test-case.md` | Template for every `TC-NNN-*.md` |
+| `skills/web/templates/scenarios.md` (journey section) | Schema for `test.describe` blocks written into journey specs |
 | `skills/macos/references/macos-automation.md` | AppleScript patterns, window/menu enumeration |
 | `skills/macos/references/test-patterns.md` | Scenario patterns by UI element type and app category |
 | `skills/web/references/playwright-patterns.md` | Playwright patterns for web TCs |
 | `skills/web/references/selector-strategies.md` | Selector strategies for SPAs |
-| `scripts/qa-screenshot.js` | Atomic screenshot + flow.md registration — prevents orphaned screenshots. Used as CLI and module. |
+| `scripts/qa-screenshot.js` | macOS/native: atomic screenshot + flow.md registration. Web platform no longer uses this for discovery. |
 | `scripts/allure/generate-report.js` | Standalone HTML report — reads ALL data (flows, scenarios, TCs) and produces a self-contained session-based report at `qa/reports/<app-slug>-<timestamp>.html` with embedded screenshots. No external dependencies (no Java, no allure-commandline). Works when opened directly via `file://`. Use `--open` to auto-open in browser. Use `--out <path>` to override the output location. |
 | `.env.example` | Template for `.env.qa` — all supported env vars |
 
@@ -270,18 +276,19 @@ cp .env.example .env.qa
 - `qa/.qa-config.json` exists with correct `framework` and `platform` values
 - `qa/state.md` exists after first checkpoint with journey coverage %
 - `qa/crawl-state.json` exists during/after BFS (web skill) with visited URLs and queue state
-- `qa/knowledgebase/screenshots/` contains at least 1 screenshot per journey step
+- **Web**: `qa/knowledgebase/aria-snapshots/` contains at least 1 `.snapshot.json` per visited page — no PNGs
+- **macOS**: `qa/knowledgebase/screenshots/` contains at least 1 screenshot per journey step
 - `qa/knowledgebase/nav-graph.md` exists with navigation graph
 - `qa/knowledgebase/personas.md` exists with discovered personas
 - `qa/knowledgebase/journey-inventory.md` exists with journey count and coverage tracking
-- `qa/flows/` (or `features/` or `test-cases/`) has flow directories — one per E2E journey
-- Each flow directory has `flow.md`, `scenarios.md`, and `test-cases/` subdirectory
-- `flow.md` includes a Discovery Evidence table with screenshot references (5-col for E2E journeys)
-- **Screenshot coverage gate passes** — every .png on disk is referenced in a flow.md (enforced by Allure generator)
+- `qa/flows/` has flow directories — one per feature area
+- Each flow directory has `flow.md` and `scenarios.md` (no `test-cases/` subdirectory for web)
+- `flow.md` includes a Discovery Evidence table with snapshot file references (web) or screenshot refs (macOS)
 - Each `scenarios.md` has at least 5 scenarios covering multiple categories
-- Each `TC-NNN-*.md` has a runnable automation block (AppleScript or Playwright TypeScript)
+- **Web**: `qa/journeys/J-NNN-<role>.spec.ts` exists — one per role, all scenarios as `test.describe` blocks. **No TC-NNN-*.md files, no specs/ directory.**
+- `qa/journeys/` files pass the Quality Contract (no placeholders, no bare waitForTimeout, semantic locators)
 - No credentials appear in any tracked file
-- Session report (`qa/reports/<app-slug>-<timestamp>.html`) generated at **phase boundaries only** (Phase 1→2, Phase 2→3, final) or when user explicitly requests — NOT on every stop/checkpoint. Per-flow resets are lightweight (state file only). Each invocation writes a new timestamped file so prior sessions are preserved.
+- Session report (`qa/reports/<app-slug>-<timestamp>.html`) generated at **phase boundaries only** (Phase 1→2, 2→3, 3→4, final) or when user explicitly requests — NOT on every stop/checkpoint.
 
 ---
 
@@ -326,6 +333,7 @@ Add to the consuming repo's `.gitignore`:
 qa/credentials/.env*
 qa/evidence/
 qa/knowledgebase/screenshots/
+qa/knowledgebase/aria-snapshots/
 qa/crawl-state.json
 qa/.auth/
 qa/reports/
@@ -335,5 +343,5 @@ allure-results/
 allure-report/
 ```
 
-Commit `qa/` itself — it is the team's living QA documentation.
-Never commit `qa/knowledgebase/screenshots/` (large binary files), `qa/.auth/` (session tokens), `qa/crawl-state.json` (ephemeral BFS state), or anything under `qa/credentials/` with real values.
+Commit `qa/` itself — it is the team's living QA documentation. **Commit `qa/journeys/`** — it is the shippable test suite.
+Never commit `qa/knowledgebase/aria-snapshots/` (large JSON files), `qa/knowledgebase/screenshots/` (large binaries), `qa/.auth/` (session tokens), `qa/crawl-state.json` (ephemeral BFS state), or anything under `qa/credentials/` with real values.

@@ -279,14 +279,14 @@ All platforms share a single state file: `qa/state.md`. Testing a different app 
 |------|-----|-----------|-------------|----------|
 | F-001 [name] | `qa/flows/F-001-[slug]/` | [N] | [N] | P[1/2/3] |
 
-### Test Cases — Written
-| TC | File | Status |
-|----|------|--------|
-| TC-001 | `F-001/test-cases/TC-001-[slug].md` | Written |
+### Journey Specs — Written
+| Journey | File | Scenarios | Status |
+|---------|------|-----------|--------|
+| J-001 | `qa/journeys/J-001-member.spec.ts` | [N] | Written |
 
-### Test Cases — Pending
-#### F-001 ([N] remaining)
-- TC-NNN [description]
+### Journey Specs — Pending
+#### [Role] ([N] scenarios remaining)
+- [scenario description]
 
 ### Platform-Specific Resume Hints
 See the platform skill's resume section for any platform-owned resume artefacts (e.g. strategy-specific state files, crawl queues, trace counters). The root skill does not know or care about them.
@@ -351,7 +351,8 @@ Every directory gets a README so anyone opening the workspace understands what i
 
 ```bash
 mkdir -p qa/planning qa/guardrails qa/credentials qa/scope
-mkdir -p qa/knowledgebase/screenshots
+mkdir -p qa/knowledgebase/aria-snapshots
+mkdir -p qa/journeys
 mkdir -p qa/context/feature-specs qa/context/figma-screens
 mkdir -p qa/evidence qa/runs
 ```
@@ -624,7 +625,7 @@ The platform skill is **fully self-contained** — it carries everything needed 
 |-------|-------|-------------|
 | **Phase 1: Discovery** | Steps 4–7 | App metadata → launch → explore → nav graph → personas → trace E2E journeys → flow.md |
 | **Phase 2: Scenarios** | Step 8 | Credential acquisition (if needed) → auth tracing → scenario generation → scenarios.md |
-| **Phase 3: Test Cases** | Step 9 | TC generation → TC-NNN-*.md with runnable code |
+| **Phase 3: Test Cases** | Step 9 | Journey spec generation → `qa/journeys/J-NNN-<role>.spec.ts` (shippable, no intermediate TC-*.md files) |
 | **Phase 4: Execution** | Steps 10–11 | Extract specs → run tests → unified report |
 | **Update mode** | Step 12 | Re-discover, add flows, full refresh |
 

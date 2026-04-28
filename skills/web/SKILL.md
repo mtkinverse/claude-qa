@@ -3,7 +3,7 @@ name: native-qa-web
 description: Autonomous QA skill for web applications using Playwright. Four continuous phases — Discovery → Scenario Planning → Test Generation → Test Execution. Stops only for credentials or context limits. QA report generated at phase boundaries only.
 platform: web
 status: beta
-version: 2.0.0
+version: 3.0.0
 ---
 
 # Web QA Skill — Playwright-Based Workflow
@@ -11,17 +11,21 @@ version: 2.0.0
 Four continuous phases that run end-to-end without stopping for user approval between phases:
 
 ```
-Phase 1: Discovery         → Seed crawl → nav graph → personas → E2E journeys → flow.md
+Phase 1: Discovery         → Seed crawl → DOM/ARIA snapshots → nav graph → personas → E2E journeys → flow.md
 Phase 2: Scenario Planning → Read flow.md → generate scenarios.md per flow
-Phase 3: Test Generation   → Read scenarios.md → write TC-NNN-*.md per scenario
-Phase 4: Test Execution    → Extract .spec.ts → run Playwright tests → pass/fail
+Phase 3: Test Generation   → Read scenarios.md → write journey specs to qa/journeys/ (shippable suite)
+Phase 4: Test Execution    → Run qa/journeys/ specs → pass/fail → report
 ```
+
+**No image processing**: Discovery uses DOM snapshots and ARIA accessibility trees — not screenshots. Screenshots are taken by Playwright only on test failure during Phase 4. Visual artifacts (images, icons, badges, illustrations) are identified from ARIA roles, `alt` attributes, and DOM structure — not by reading PNG files.
+
+**Single source of truth for tests**: Phase 3 writes runnable journey specs directly to `qa/journeys/`. There are no separate TC-NNN-*.md files in flow directories. `qa/journeys/` is the shippable suite — zip it and hand it off. Phase 4 runs it.
 
 **Continuous execution**: phases flow into each other automatically. The agent only stops for:
 - **Credentials required** — must ask user for auth/API keys
 - **Context full** — must checkpoint to `qa/state.md` and reset
 
-**Report timing**: `node scripts/allure/generate-report.js --open` generates a self-contained session report at `qa/reports/<app-slug>-<timestamp>.html` with embedded screenshots. No Java or allure-commandline needed — works when opened directly. Each run writes a new timestamped file so prior sessions are preserved. Only run at **phase boundaries** (Phase 1→2, 2→3, 3→4, final) or when user asks — never on per-flow resets.
+**Report timing**: `node scripts/allure/generate-report.js --open` generates a self-contained session report at `qa/reports/<app-slug>-<timestamp>.html`. Only run at **phase boundaries** (Phase 1→2, 2→3, 3→4, final) or when user asks — never on per-flow resets.
 
 ---
 
@@ -38,7 +42,7 @@ These `.env.qa` variables tune the BFS crawler. Defaults work for most apps — 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `QA_PAGE_WAIT_MS` | `2000` | Minimum wait (ms) after each page loads before screenshotting. Increase for slow SPAs. |
+| `QA_PAGE_WAIT_MS` | `2000` | Minimum wait (ms) after each page loads before snapshotting. Increase for slow SPAs. |
 | `QA_MAX_PAGES` | `50` | Maximum pages the BFS visits. Prevents infinite crawl on large apps. |
 | `QA_MAX_DEPTH` | `5` | Maximum click-depth from homepage. Pages deeper are queued but skipped. |
 | `QA_NAV_TIMEOUT` | `15000` | Timeout (ms) for `page.goto()` calls. |
@@ -47,9 +51,10 @@ These `.env.qa` variables tune the BFS crawler. Defaults work for most apps — 
 
 ## Phase 1: Discovery
 
-**Goal**: Discover EVERY reachable page in the application via deep BFS crawl, then organize into feature-scoped flows.
+**Goal**: Discover EVERY reachable page in the application via deep BFS crawl using DOM and ARIA snapshots — no image processing.
 **Priority**: Exploration first — maximize pages discovered. Auth is a gate to pass through, not a journey to trace. **NEVER skip any credential gate, setup step, or onboarding step without explicit user permission.** If `.env.qa` has values → use them. If not → ask the user. The agent must never autonomously click "Skip", "Set up later", "Maybe later", or any bypass button.
-**Output**: `qa/knowledgebase/` (screenshots, ui-inventory, nav-graph) + `qa/flows/F-NNN-*/flow.md` per feature area.
+**Output**: `qa/knowledgebase/` (aria-snapshots/, ui-inventory, nav-graph) + `qa/flows/F-NNN-*/flow.md` per feature area.
+**Snapshot approach**: Every "visual" observation is derived from the DOM/ARIA tree — not from reading PNG files. Visual artifacts (images, illustrations, icons) are identified via `role="img"`, `alt` text, `aria-label`, and CSS class names in the DOM. No `Read` tool calls on PNGs during discovery.
 **Transition to Phase 2**: Gated — after all flows traced, the agent runs a **deep-exploration `AskUserQuestion`** (Phase 1 → Phase 2 Transition step 3). User either requests more exploration or approves the move to Phase 2. Session is checkpointed to `qa/state.md` at the end of every deeper pass.
 
 ---
@@ -85,7 +90,13 @@ Follow the root SKILL.md **"STOP / PAUSE / SAVE STATE — Immediate Handler"** e
 Handled by main SKILL.md Steps 1-2. Confirm:
 - `.qa-config.json` has `"platform": "web"`
 - `QA_APP_URL` is set in `.env.qa`
-- `qa/knowledgebase/screenshots/` directory exists
+- `qa/knowledgebase/aria-snapshots/` directory exists (DOM/ARIA snapshot store — replaces screenshots/ for discovery)
+
+Also create `qa/journeys/` now — this is where Phase 3 writes shippable specs:
+
+```bash
+mkdir -p qa/knowledgebase/aria-snapshots qa/journeys qa/runs
+```
 
 Then write the Playwright config to `qa/playwright.config.ts`:
 
@@ -110,7 +121,7 @@ const REPO_ROOT = process.cwd();
 const AUTH_FILE = path.join(REPO_ROOT, 'qa/.auth/user.json');
 
 export default defineConfig({
-  testDir:       path.join(REPO_ROOT, 'qa/flows'),
+  testDir:       path.join(REPO_ROOT, 'qa/journeys'),
   testMatch:     '**/*.spec.ts',
   fullyParallel: true,
   forbidOnly:    CI,
@@ -235,21 +246,56 @@ Copy the code skeleton from the chosen strategy file into `qa/scripts/<strategy>
 
 Also write a dispatcher stub at `qa/scripts/explore.js` that `require()`s the chosen helper. Subsequent phases and resumes load `explore.js` — swapping strategies means replacing what it dispatches to.
 
-#### W-2.5 — Execute + screenshot + READ
+#### W-2.5 — Execute + DOM/ARIA snapshot + analyze
 
-Run the helper. For every page/step:
+Run the helper. For every page/step — **no image reading, no `Read` tool calls on PNGs**:
+
 1. Navigate / interact via Playwright
-2. Wait `QA_PAGE_WAIT_MS`
-3. Verify state change (URL / DOM fingerprint)
-4. Capture via `scripts/qa-screenshot.js` `capture()` — writes `<file>.png` + `<file>.png.dom.json` atomically, registers in `flow.md`
-5. **Read** the screenshot with the Read tool before deciding the next action. Never act on assumption alone.
-6. **Read** the `.dom.json` sidecar — `dom.inputs` for form fields, `dom.buttons` for CTAs, `dom.links` for navigation links (all available at default `action` tier). No extra `page.evaluate()` needed.
+2. Wait `QA_PAGE_WAIT_MS` for the page to settle
+3. Verify state change via `page.url()` and `page.title()`
+4. **Capture DOM/ARIA snapshot** — run this inline after every navigation:
+
+```javascript
+// Atomic DOM + ARIA snapshot — replaces screenshot capture for discovery
+async function snapshotPage(page, slug, snapshotDir) {
+  const fs   = require('fs');
+  const path = require('path');
+  const aria = await page.accessibility.snapshot();
+  const dom  = await page.evaluate(() => {
+    const ex = el => ({
+      tag:         el.tagName?.toLowerCase(),
+      role:        el.getAttribute('role') || el.tagName?.toLowerCase(),
+      name:        el.getAttribute('aria-label') || el.getAttribute('name') || el.innerText?.slice(0,80) || '',
+      href:        el.href  || null,
+      type:        el.type  || null,
+      placeholder: el.placeholder || null,
+      alt:         el.alt   || null,
+      visible:     el.offsetParent !== null,
+    });
+    return {
+      url:      location.href,
+      title:    document.title,
+      headings: [...document.querySelectorAll('h1,h2,h3')].map(h => ({ level: h.tagName, text: h.innerText.slice(0,120) })),
+      inputs:   [...document.querySelectorAll('input,textarea,select')].map(ex),
+      buttons:  [...document.querySelectorAll('button,[role="button"]')].map(ex),
+      links:    [...document.querySelectorAll('a[href]')].map(ex),
+      images:   [...document.querySelectorAll('img,[role="img"]')].map(e => ({ alt: e.alt, label: e.getAttribute('aria-label') })),
+      alerts:   [...document.querySelectorAll('[role="alert"],[role="status"]')].map(e => e.innerText.slice(0,200)),
+    };
+  });
+  fs.writeFileSync(path.join(snapshotDir, slug + '.snapshot.json'), JSON.stringify({ slug, aria, dom }, null, 2));
+  return dom;
+}
+```
+
+5. **Analyze the snapshot** directly — from `dom.headings`, `dom.buttons`, `dom.links`, `dom.inputs`, `dom.images`, `dom.alerts`, and the ARIA tree you can read the page section, all interactive elements, navigation targets, visible errors, and visual artifacts (images/icons described by `alt`/`aria-label`). No PNG reading needed.
+6. Decide the next action from snapshot data. Record observations in `flow.md` discovery evidence using snapshot fields (headings, button labels, link text) instead of screenshot paths.
 
 All strategies share the same session artefacts:
-- `qa/knowledgebase/screenshots/` — PNGs from every verified state
-- `qa/knowledgebase/ui-inventory.md` — page inventory (strategy-agnostic schema: url, title, fingerprint, screenshot, auth-gated?)
-- `qa/knowledgebase/nav-graph.md` — every outbound link on every visited page
-- `qa/crawl-state.json` (BFS only) — queue + visited set for mid-crawl resume. If using targeted-trace, write `qa/trace-state.json` instead; if sitemap-spot-check, write `qa/sitemap-groups.json`. The shape is strategy-owned; the principle is identical: **auto-saved after every page so resume is free**.
+- `qa/knowledgebase/aria-snapshots/` — `.snapshot.json` files (ARIA tree + DOM extract) per visited state
+- `qa/knowledgebase/ui-inventory.md` — page inventory (url, title, fingerprint, snapshot file, auth-gated?)
+- `qa/knowledgebase/nav-graph.md` — every outbound link from every visited page (from `dom.links`)
+- `qa/crawl-state.json` (BFS only) — queue + visited set for mid-crawl resume. If using targeted-trace, write `qa/trace-state.json` instead; if sitemap-spot-check, write `qa/sitemap-groups.json`. Auto-saved after every page so resume is free.
 
 #### W-2.6 — Credential gate protocol (all strategies)
 
@@ -395,26 +441,25 @@ qa/flows/F-003-[slug]/flow.md
 
 ## Discovery Evidence
 
-| Step | Page/Screen | Action | Screenshot | Observed |
-|------|------------|--------|-----------|---------|
+| Step | Page/Screen | Action | Snapshot | Observed (from DOM/ARIA) |
+|------|------------|--------|----------|--------------------------|
 ```
 
-Screenshots taken during BFS crawl are **already captured** in `qa/flows/seed-crawl/flow.md`. Redistribute them into the correct F-NNN flows:
+Snapshot column contains the `.snapshot.json` filename (e.g. `settings-profile.snapshot.json`). Observed column describes what was found in `dom.headings`, `dom.buttons`, `dom.inputs`, `dom.alerts`, and ARIA roles — no PNG references.
 
 #### Bridge seed-crawl evidence into F-NNN flows
 
-1. Read `qa/flows/seed-crawl/flow.md` — parse the Discovery Evidence table
-2. Read `qa/crawl-state.json` — get the page manifest (URL → screenshot mapping)
-3. For each F-NNN flow, find which BFS screenshots belong to it:
+1. Read `qa/crawl-state.json` — get the page manifest (URL → snapshot file mapping)
+2. For each F-NNN flow, find which snapshots belong to it:
    - Match by URL prefix (e.g., pages at `/settings/*` → F-002-settings)
    - Match by nav-graph grouping (pages reachable from the same nav item)
-4. Copy the matching evidence rows into each F-NNN's `flow.md` Discovery Evidence table
-5. After all rows are distributed, delete the seed-crawl directory:
+3. Copy the matching evidence rows into each F-NNN's `flow.md` Discovery Evidence table
+4. After all rows are distributed, delete the seed-crawl directory:
    ```bash
    rm -rf qa/flows/seed-crawl
    ```
 
-> Every screenshot must end up in exactly one F-NNN flow. If a screenshot doesn't fit any flow, create a catch-all flow (e.g., `F-NNN-misc-pages`). The screenshot coverage gate will fail on any `.png` not referenced in a `flow.md`.
+> Every snapshot must end up in exactly one F-NNN flow. If a snapshot doesn't fit any flow, create a catch-all flow (e.g., `F-NNN-misc-pages`).
 
 #### Present to user:
 
@@ -462,23 +507,20 @@ After all flows are traced (Step W-6 complete), do the **deferred housekeeping**
 
 1. **Update `qa/knowledgebase/journey-inventory.md`** — batch-update all flows as TRACED or SKIPPED based on what exists in `qa/flows/`
 
-2. **Run screenshot coverage check** (lightweight inline — see Key Rules > Performance #17):
+2. **Run snapshot coverage check** (verify every page in ui-inventory.md has a corresponding snapshot):
    ```bash
    node -e "
-   const fs=require('fs'),p=require('path'),QA='qa';
-   const disk=new Set(fs.readdirSync(p.join(QA,'knowledgebase','screenshots')).filter(f=>f.endsWith('.png')));
-   const refs=new Set();
-   for(const d of['flows','features']){const b=p.join(QA,d);if(!fs.existsSync(b))continue;
-   for(const s of fs.readdirSync(b)){for(const f of['flow.md','overview.md']){
-   const fp=p.join(b,s,f);if(!fs.existsSync(fp))continue;
-   const c=fs.readFileSync(fp,'utf8');let m;const r=/[a-zA-Z0-9_-]+\\.png/g;
-   while(m=r.exec(c))refs.add(m[0]);}}}
-   const orphaned=[...disk].filter(f=>!refs.has(f));
-   if(orphaned.length){console.warn('⚠',orphaned.length,'orphaned screenshots — registering...');orphaned.forEach(f=>console.warn(' ',f));}
-   else console.log('✅',disk.size+'/'+disk.size,'screenshots covered');
+   const fs=require('fs'),p=require('path');
+   const snapDir=p.join('qa','knowledgebase','aria-snapshots');
+   const snaps=fs.existsSync(snapDir)?new Set(fs.readdirSync(snapDir).filter(f=>f.endsWith('.snapshot.json'))):new Set();
+   const inv=fs.existsSync('qa/knowledgebase/ui-inventory.md')?fs.readFileSync('qa/knowledgebase/ui-inventory.md','utf8'):'';
+   const refs=new Set([...inv.matchAll(/[a-zA-Z0-9_-]+\\.snapshot\\.json/g)].map(m=>m[0]));
+   const orphaned=[...snaps].filter(f=>!refs.has(f));
+   if(orphaned.length){console.warn('⚠',orphaned.length,'unreferenced snapshots:',orphaned);}
+   else console.log('✅',snaps.size,'snapshots, all referenced in ui-inventory.md');
    "
    ```
-   If orphans found → register them with `node scripts/qa-screenshot.js` before continuing.
+   If orphaned snapshots found → add them to `ui-inventory.md` under the appropriate flow.
 
 3. **Deep-exploration gate — `AskUserQuestion`** (mandatory stop before Phase 2):
 
@@ -490,7 +532,7 @@ After all flows are traced (Step W-6 complete), do the **deferred housekeeping**
    Coverage summary:
    - Pages discovered: [N]
    - Flows traced: [M] ([list flow IDs and names])
-   - Screenshots: [K]
+   - DOM/ARIA snapshots: [K]
    - Auth-gated areas: [reached / not reached — list any skipped]
 
    Would you like me to go deeper before I generate test scenarios?"
@@ -504,8 +546,8 @@ After all flows are traced (Step W-6 complete), do the **deferred housekeeping**
 
    **If user picks option 1 or 2**:
    - Perform the requested deeper exploration (BFS sub-crawl, targeted trace, or specific click sequence)
-   - Use `capture()` for every screenshot — the same rules as Phase 1 apply
-   - Register all new screenshots in the relevant `flow.md` or create a new `F-NNN-*` flow if the area is distinct
+   - Use `snapshotPage()` for every new page — the same DOM/ARIA rules as Phase 1 apply. No screenshots.
+   - Register all new snapshots in the relevant `flow.md` or create a new `F-NNN-*` flow if the area is distinct
    - After the deeper pass completes: **checkpoint** — append to `qa/state.md`:
      ```
      ## Deeper Exploration Pass — [timestamp]
@@ -663,273 +705,165 @@ For each flow in `qa/flows/`, read `flow.md` and generate ALL scenarios using th
 
 ---
 
-## Phase 3: Test Case Generation
+## Phase 3: Test Case Generation — Shippable Journey Suite
 
-**Goal**: Write runnable Playwright test cases for every scenario.
-**Input**: `qa/flows/F-NNN-*/scenarios.md` files from Phase 2.
-**Output**: `qa/flows/F-NNN-*/test-cases/TC-NNN-*.md` files with embedded TypeScript.
-**Transition to Phase 4**: Automatic — after all TCs written, immediately extract and run.
+**Goal**: Write runnable Playwright journey specs directly to `qa/journeys/` — the shippable test suite. No intermediate TC markdown files. No duplicate locations.
+**Input**: `qa/flows/F-NNN-*/scenarios.md` files from Phase 2 + DOM/ARIA snapshots from Phase 1.
+**Output**: `qa/journeys/J-NNN-<role>.spec.ts` — one spec file per role, containing ALL scenarios for that role as `test.describe` blocks organized by flow. Also writes `qa/run.js`, `qa/package.json`, and `qa/playwright.config.ts` to make `qa/` independently runnable.
+**Transition to Phase 4**: Automatic — after journeys are written and quality-checked, Phase 4 runs them.
 
-### Step W-10: Test Case Generation
+> **Single source of truth**: `qa/journeys/` is the only location test code lives. There are no `test-cases/` subdirectories inside flows. Scenarios and test logic coexist in the journey spec — `flow.md` and `scenarios.md` are documentation only.
 
-For each scenario, write `TC-NNN-[slug].md` with embedded Playwright TypeScript.
+---
 
-**Standards for web TCs:**
+### Step W-10: Journey Spec Writing
+
+**Quality Contract — every journey spec MUST satisfy ALL of these before Phase 4:**
+1. **Syntactically valid TypeScript** — no missing `await`, no unresolved imports, no `any` on assertions.
+2. **Logically complete** — every `test()` block has a meaningful `expect()` assertion. No `// TODO`, no empty `expect()`.
+3. **No placeholder values** — no `[selector]`, `[route]`, `[label]`, `[value]` remaining.
+4. **No hardcoded credentials** — all creds via `process.env.QA_*`.
+5. **Semantic locators preferred** — `getByRole` > `getByLabel` > `getByTestId` > CSS. CSS only with an explanatory comment.
+6. **No bare `waitForTimeout`** — replace with `waitForSelector`, `waitForResponse`, `waitForURL`, or `waitForFunction`.
+7. **`storageState` at `test.use` level** — never re-login inside a test that has a cached session.
+
+**Standards:**
 - Use `waitUntil: 'domcontentloaded'` (never `networkidle` on SPAs)
 - All URLs are relative — `page.goto('/')` not `page.goto('https://...')`
 - `baseURL` comes from `QA_APP_URL` via `qa/playwright.config.ts`
-- Screenshot evidence saved to `qa/knowledgebase/screenshots/TC-NNN-[slug].png`
 - Credentials always from `process.env.QA_TEST_EMAIL` — never hardcoded
-- Every TC that needs auth must use `storageState` (from `qa/.auth/user.json`) or explicit login steps
+- Locators derived from DOM/ARIA snapshots (Phase 1) — use `aria-label`, `role`, `name`, `placeholder` values observed in `.snapshot.json` files
 
-**TC structure for web:**
-```markdown
-# TC-NNN: [Scenario Name]
+**Journey spec structure** (one file per role, all flows for that role):
 
-| Field | Value |
-|-------|-------|
-| **TC ID** | TC-NNN |
-| **Flow** | F-NNN — [Journey Name] |
-| **Scenario** | S-NNN-NN — [Scenario] |
-| **Priority** | P1/P2/P3 |
-| **Platform** | Web — Chromium |
-| **Auth** | None / Required |
-| **Automation** | Playwright (TypeScript) |
-| **Created** | YYYY-MM-DD |
-
-## Preconditions
-- [ ] [state before test]
-
-## Steps
-
-| Step | Action | Expected Result |
-|------|--------|----------------|
-| 1 | [action] | [expected] |
-
-## Playwright Test
-
-\`\`\`typescript
+```typescript
+// qa/journeys/J-001-member.spec.ts
 import { test, expect } from '@playwright/test';
-
-test('TC-NNN: [description]', async ({ page }) => {
-  // relative URL — baseURL from .env.qa → qa/playwright.config.ts
-  await page.goto('/path', { waitUntil: 'domcontentloaded' });
-  // Wait for content to render (adaptive)
-  await page.waitForFunction(
-    () => document.body.innerText.length > 50,
-    { timeout: 15000 }
-  ).catch(() => {});
-  
-  // assertions
-  await expect(page.locator('[selector]')).toBeVisible();
-  
-  // evidence — TCs use raw Playwright screenshots (they run independently via test runner,
-  // not the QA skill session — capture() is for Phase 1 discovery only)
-  await page.screenshot({ path: 'qa/knowledgebase/screenshots/TC-NNN-pass.png', fullPage: true });
-});
-\`\`\`
-
-## Pass Criteria
-- [ ] [binary observable outcome]
-
-## Evidence
-\`qa/evidence/TC-NNN-pass.png\`
-
-## Teardown
-[None / cleanup steps]
-```
-
-**Phase boundary checkpoint** — write full `qa/state.md` (heavy checkpoint per root SKILL.md). Generate QA report. Log: `"Phase 3 complete — [N] TC files written."`
-
----
-
-## Phase 4: Test Extraction, Bundling & Execution
-
-**Output contract — Phase 4 is NOT complete until ALL of these exist in `qa/`:**
-
-| File / Dir | Content |
-|---|---|
-| `specs/TC-NNN-*.spec.ts` | One file per TC — flat, independently runnable |
-| `journeys/J-NNN-<role>.spec.ts` | One file per role — all that role's TCs chained in one browser session |
-| `run.js` | Cross-platform Node runner: `node run.js` · `--journey J-002` · `--cases TC-001,TC-004` |
-| `package.json` | `@playwright/test` + `dotenv` — makes `qa/` runnable without the parent project |
-
-If any are missing after W-11, re-run `node qa/scripts/build-suite.js` before declaring Phase 4 done.
-
-**Input**: `qa/flows/F-NNN-*/test-cases/TC-NNN-*.md` files from Phase 3.
-
-### Step W-10.5: Pre-Extraction Quality Review
-
-Before extracting any spec, scan every `TC-*.md` code block for **Quality Contract violations**. Fix all inline before proceeding to W-11. No violations may survive into extracted `.spec.ts` files.
-
-**Quality Contract — every generated spec MUST satisfy ALL of these:**
-1. **Syntactically valid TypeScript** — no missing `await`, no unresolved imports, no `any` on assertions.
-2. **Logically complete** — every step has a meaningful `expect()` assertion. No `// TODO`, no empty `expect()`.
-3. **No placeholder values** — no `[selector]`, `[route]`, `[label]`, `[value]` remaining in code blocks.
-4. **No hardcoded credentials** — all creds via `process.env.QA_*`.
-5. **Semantic locators preferred** — `getByRole` > `getByLabel` > `getByTestId` > CSS. CSS allowed only with a comment explaining why.
-6. **No bare `waitForTimeout`** — replace with `waitForSelector`, `waitForResponse`, `waitForURL`, or `waitForFunction`.
-7. **`storageState` at describe/`test.use` level** — never re-login inside a test that has a cached session.
-
----
-
-### Step W-11: Extract Specs, Build Journeys, Write Runner
-
-Run this full generation script (write it to `qa/scripts/build-suite.js`, execute once):
-
-```javascript
-// Why: one-pass extraction + journey bundling + self-contained runner generation.
-// Strategy: extracts TC code blocks → qa/specs/, groups by role → qa/journeys/,
-//           writes qa/package.json + qa/run.js so qa/ is independently runnable.
-// Fallback: on any write error, log path + error and continue — never abort entire pass.
-const fs   = require('fs');
-const path = require('path');
-
-const QA   = path.resolve(__dirname, '..');  // qa/
-const SPECS = path.join(QA, 'specs');
-const JOURNEYS = path.join(QA, 'journeys');
-fs.mkdirSync(SPECS,    { recursive: true });
-fs.mkdirSync(JOURNEYS, { recursive: true });
-
-// ── 1. Extract flat specs ────────────────────────────────────────────────────
-function findTCs(dir) {
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => {
-    const p = path.join(dir, e.name);
-    return e.isDirectory() ? findTCs(p)
-         : (e.name.startsWith('TC-') && e.name.endsWith('.md')) ? [p] : [];
-  });
-}
-
-const tcs = findTCs(QA).sort();
-const byRole = {};  // role → [{tcId, slug, specPath, flowId}]
-
-for (const tc of tcs) {
-  const content = fs.readFileSync(tc, 'utf8');
-  const code    = content.match(/```typescript\s*\n([\s\S]*?)```/)?.[1]?.trim();
-  if (!code) { console.warn('⚠ No TS block:', tc); continue; }
-
-  const tcId  = path.basename(tc, '.md');                  // TC-001-cold-launch
-  const flowDir = path.basename(path.dirname(path.dirname(tc)));  // F-001-slug
-  const specFile = path.join(SPECS, tcId + '.spec.ts');
-  fs.writeFileSync(specFile, code + '\n');
-  console.log('✅ spec:', path.relative(QA, specFile));
-
-  // Derive role from flow.md Role row
-  const flowMd = path.join(QA, 'flows', flowDir, 'flow.md');
-  let role = 'anonymous';
-  if (fs.existsSync(flowMd)) {
-    const m = fs.readFileSync(flowMd, 'utf8').match(/\|\s*\*\*Role\*\*\s*\|\s*([^\|]+)\|/);
-    if (m) role = m[1].trim().toLowerCase().split(/[\s\/]/)[0];
-  }
-  (byRole[role] ??= []).push({ tcId, flowDir, specFile });
-}
-
-// ── 2. Build journey bundles (one per role) ──────────────────────────────────
-const roles = Object.keys(byRole).sort();
-roles.forEach((role, idx) => {
-  const jNum  = String(idx + 1).padStart(3, '0');
-  const jFile = path.join(JOURNEYS, `J-${jNum}-${role}.spec.ts`);
-  const storageState = `qa/.auth/${role}.json`;
-
-  const steps = byRole[role].map(({ tcId, specFile }) => {
-    const code = fs.readFileSync(specFile, 'utf8');
-    // Extract the async test body (between first `async ({ page }) => {` and last `};`)
-    const bodyMatch = code.match(/async\s*\(\{\s*page[^}]*\}\)\s*=>\s*\{([\s\S]*)\}\s*\);?\s*$/);
-    const body = bodyMatch ? bodyMatch[1].trim() : `// ⚠ could not extract body from ${tcId}`;
-    return `  await test.step('${tcId}', async () => {\n    ${body.replace(/\n/g, '\n    ')}\n  });`;
-  }).join('\n\n');
-
-  const journeyTs = `import { test, expect } from '@playwright/test';
 import * as dotenv from 'dotenv';
 dotenv.config({ path: '../.env.qa' });
 
-// Journey: ${role} — ${byRole[role].length} TCs in session order
-test.use({ storageState: '${storageState}' });
+// All member-role scenarios in session order
+test.use({ storageState: 'qa/.auth/member.json' });
 
-test('J-${jNum}: ${role} full journey', async ({ page }) => {
-${steps}
+// ── F-001: [Flow Name] ────────────────────────────────────────────
+test.describe('F-001: [Flow Name]', () => {
+
+  test('S-001-01: [happy path scenario]', async ({ page }) => {
+    await page.goto('/path', { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.body.innerText.length > 50, { timeout: 15000 }).catch(() => {});
+    // locators from snapshot: dom.buttons[name="Submit"], dom.inputs[placeholder="Email"]
+    await page.getByRole('button', { name: 'Submit' }).click();
+    await expect(page.getByRole('heading', { name: 'Success' })).toBeVisible();
+  });
+
+  test('S-001-02: [negative / edge case]', async ({ page }) => {
+    await page.goto('/path', { waitUntil: 'domcontentloaded' });
+    await page.getByLabel('Email').fill('not-an-email');
+    await page.getByRole('button', { name: 'Submit' }).click();
+    await expect(page.getByRole('alert')).toContainText(/invalid|error/i);
+  });
+
 });
-`;
-  fs.writeFileSync(jFile, journeyTs);
-  console.log('✅ journey:', path.relative(QA, jFile));
+
+// ── F-002: [Next Flow] ────────────────────────────────────────────
+test.describe('F-002: [Next Flow]', () => {
+  // ... all scenarios for this flow
 });
-
-// ── 3. Write qa/package.json ─────────────────────────────────────────────────
-const pkg = {
-  name: 'qa-suite', private: true,
-  scripts: {
-    test:           'node run.js',
-    'test:journey': 'node run.js --journey',
-    'test:cases':   'node run.js --cases'
-  },
-  dependencies: { '@playwright/test': '^1.44.0', dotenv: '^16.0.0' }
-};
-fs.writeFileSync(path.join(QA, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
-console.log('✅ qa/package.json');
-
-// ── 4. Write qa/run.js ───────────────────────────────────────────────────────
-const runner = `#!/usr/bin/env node
-// Cross-platform runner — Mac, Linux, Windows. Requires Node 20+.
-const { execSync } = require('child_process');
-const args     = process.argv.slice(2);
-const journey  = args[args.indexOf('--journey') + 1];
-const cases    = args[args.indexOf('--cases')   + 1];
-
-console.log('→ Installing dependencies...');
-execSync('npm install --silent',                   { stdio: 'inherit', cwd: __dirname });
-execSync('npx playwright install chromium --quiet', { stdio: 'inherit', cwd: __dirname });
-
-const grep   = journey ? \`--grep "J-\${journey}"\`
-             : cases   ? \`--grep "\${cases.split(',').join('|')}"\`
-             : '';
-const target = cases ? 'specs/' : 'journeys/';
-
-console.log(\`→ Running \${target} \${grep || '(all)'}\`);
-execSync(
-  \`npx playwright test \${target} \${grep} --reporter=html --continue-on-failure\`,
-  { stdio: 'inherit', cwd: __dirname }
-);
-execSync('npx playwright show-report', { stdio: 'inherit', cwd: __dirname });
-`;
-fs.writeFileSync(path.join(QA, 'run.js'), runner);
-console.log('✅ qa/run.js');
-
-// ── 5. Copy .env.example into qa/ if not already there ───────────────────────
-const envSrc  = path.resolve(QA, '..', '.env.example');
-const envDest = path.join(QA, '.env.example');
-if (fs.existsSync(envSrc) && !fs.existsSync(envDest))
-  fs.copyFileSync(envSrc, envDest);
-
-console.log(`\n✅ Suite built: ${tcs.length} specs, ${roles.length} journeys.`);
-console.log('   Share: zip -r qa-suite.zip qa/ --exclude "qa/node_modules/*" --exclude "qa/.auth/*" --exclude "qa/knowledgebase/screenshots/*" --exclude "qa/.env.qa"');
-console.log('   Run:   node qa/run.js');
 ```
 
-Execute: `node qa/scripts/build-suite.js`
+Write one journey file per role. Process roles in order:
+1. Read all `scenarios.md` files for flows that belong to this role
+2. For each scenario in each flow: write a `test()` block inside the flow's `test.describe()` using locators derived from the Phase 1 ARIA/DOM snapshots
+3. Write the complete journey spec to `qa/journeys/J-NNN-<role>.spec.ts`
+
+Also write for anonymous/unauthenticated scenarios:
+
+```typescript
+// qa/journeys/J-000-anonymous.spec.ts
+import { test, expect } from '@playwright/test';
+// No storageState — unauthenticated tests only
+
+test.describe('F-001: Public landing', () => {
+  // public-facing scenarios
+});
+```
+
+**After writing all journey specs**, write the runner infrastructure:
+
+```javascript
+// Write qa/run.js
+const runner = `#!/usr/bin/env node
+const { execSync } = require('child_process');
+const args    = process.argv.slice(2);
+const journey = args[args.indexOf('--journey') + 1];
+
+console.log('→ Installing dependencies...');
+execSync('npm install --silent',                    { stdio: 'inherit', cwd: __dirname });
+execSync('npx playwright install chromium --quiet', { stdio: 'inherit', cwd: __dirname });
+
+const grep = journey ? \`--grep "J-\${journey}"\` : '';
+console.log(\`→ Running journeys/ \${grep || '(all)'}\`);
+execSync(
+  \`npx playwright test journeys/ \${grep} --config playwright.config.ts --reporter=html --continue-on-failure\`,
+  { stdio: 'inherit', cwd: __dirname }
+);
+`;
+require('fs').writeFileSync(require('path').join(__dirname, '../qa/run.js'), runner);
+```
+
+```json
+// Write qa/package.json
+{
+  "name": "qa-suite",
+  "private": true,
+  "scripts": {
+    "test": "node run.js",
+    "test:journey": "node run.js --journey"
+  },
+  "dependencies": { "@playwright/test": "^1.44.0", "dotenv": "^16.0.0" }
+}
+```
+
+Also copy `.env.example` to `qa/.env.example` if it doesn't already exist.
+
+**Phase boundary checkpoint** — write full `qa/state.md`. Log: `"Phase 3 complete — [N] journey specs written to qa/journeys/, [N] total test cases."`
+
+Announce to user:
+> "✅ Shippable test suite ready in `qa/journeys/` — [N] journey files, [N] test cases.
+> **To run**: `node qa/run.js`
+> **To share**: `zip -r qa-suite.zip qa/journeys/ qa/run.js qa/package.json qa/playwright.config.ts`"
 
 ---
 
-### Step W-11b: Journey Execution with Run-State Tracking
+## Phase 4: Test Execution & Reporting
 
-Before running, write `qa/run-state.md` (the run todo — ≤30 lines total):
+**Goal**: Run the shippable journey suite from `qa/journeys/` and generate the final report.
+**Input**: `qa/journeys/J-NNN-*.spec.ts` written in Phase 3.
+**Output**: Pass/fail results per journey + unified HTML report.
+**No test writing in this phase** — Phase 4 is execution only.
+
+---
+
+### Step W-11: Journey Execution with Run-State Tracking
+
+Write `qa/run-state.md` before running (the run todo — ≤30 lines total):
 
 ```markdown
 # Run State — [AppName] [YYYY-MM-DD HH:MM]
 > Resume: re-trigger `/native-qa` → option 1, or `node qa/run.js`
 
-| Journey | Role | TCs | Status | Failure |
-|---------|------|-----|--------|---------|
-| J-001 | anonymous | TC-001,TC-005 | ⬜ pending | — |
-| J-002 | member | TC-002,TC-003 | ⬜ pending | — |
-| J-003 | admin | TC-006,TC-007 | ⬜ pending | — |
+| Journey | Role | Tests | Status | Failure |
+|---------|------|-------|--------|---------|
+| J-000 | anonymous | [N] | ⬜ pending | — |
+| J-001 | member | [N] | ⬜ pending | — |
+| J-002 | admin | [N] | ⬜ pending | — |
 ```
 
 Then for each journey row, in order:
 1. Update row status → `⏳ running`
-2. `npx playwright test qa/journeys/J-NNN-*.spec.ts --reporter=line --continue-on-failure`
+2. `npx playwright test qa/journeys/J-NNN-*.spec.ts --config qa/playwright.config.ts --reporter=line --continue-on-failure`
 3. Parse exit code + first failure line from stdout
-4. Update row → `✅ done` or `❌ failed(TC-NNN: first-failure-text)`
+4. Update row → `✅ done` or `❌ failed([test name]: [first-failure-text])`
 
 **Resume from partial failure**: on re-trigger, read `qa/run-state.md`, skip `✅ done` rows, continue from first non-done row. No re-running passing journeys.
 
@@ -949,17 +883,16 @@ Tell the user: `"✅ All 4 phases complete. [N] flows, [N] scenarios, [N] TCs, [
 
 **To share the test suite:**
 ```bash
-zip -r qa-suite.zip qa/ \
-  --exclude "qa/node_modules/*" --exclude "qa/.auth/*" \
-  --exclude "qa/knowledgebase/screenshots/*" --exclude "qa/.env.qa"
+zip -r qa-suite.zip qa/journeys/ qa/run.js qa/package.json qa/playwright.config.ts \
+  qa/.env.example
 ```
-Recipient: `unzip qa-suite.zip && cp qa/.env.example qa/.env.qa` (fill URL + creds) → `node qa/run.js`
+Recipient: `unzip qa-suite.zip && cp .env.example .env.qa` (fill URL + creds) → `node run.js`
 
 ---
 
 ### Step W-13: Update Mode
 
-Triggered when `HAS_WORKSPACE` is detected (TC files already exist). The workspace has completed at least one full run. The goal is to **incrementally update** — not redo everything from scratch.
+Triggered when `HAS_WORKSPACE` is detected (journey specs already exist in `qa/journeys/`). The workspace has completed at least one full run. The goal is to **incrementally update** — not redo everything from scratch.
 
 #### W-13.1: Read Current State
 
@@ -967,7 +900,7 @@ Triggered when `HAS_WORKSPACE` is detected (TC files already exist). The workspa
 cat qa/state.md
 cat qa/.qa-config.json
 ls qa/flows/*/flow.md 2>/dev/null | wc -l
-find qa -name "TC-*.md" 2>/dev/null | wc -l
+ls qa/journeys/*.spec.ts 2>/dev/null | wc -l
 ```
 
 Present to user:
@@ -977,27 +910,27 @@ Present to user:
 > |-------|-------|
 > | Flows | [N] |
 > | Scenarios | [N] |
-> | TCs | [N] |
+> | Journey specs | [N] in qa/journeys/ |
 > | Last run | [date from state.md] |
 >
 > What would you like to do?
 >
-> **1) Re-discover** — re-crawl the app, find new pages/flows, keep existing TCs
-> **2) Add flows** — add specific new flows without re-crawling
-> **3) Re-run tests** — re-execute existing TCs and generate fresh report
-> **4) Full refresh** — delete all flows and TCs, start Phase 1 from scratch"
+> **1) Re-discover** — re-crawl the app, find new pages/flows, regenerate affected journey specs
+> **2) Add flows** — add specific new flows without re-crawling, append to relevant journey specs
+> **3) Re-run tests** — re-execute existing journey specs and generate fresh report
+> **4) Full refresh** — delete all flows, snapshots and journey specs, start Phase 1 from scratch"
 
 Wait for user's choice.
 
 #### W-13.2: Route Based on Choice
 
-- **"1" / "re-discover"** → Delete `qa/crawl-state.json` (force fresh crawl), then run Step W-2 (BFS crawl) again. Compare new page inventory with existing `ui-inventory.md`. For new pages not in any existing flow → create new flow directories. For existing flows → keep as-is unless pages are gone (mark as stale). Then run Phase 2–4 for new flows only.
+- **"1" / "re-discover"** → Delete `qa/crawl-state.json` (force fresh crawl), then run Step W-2 (BFS crawl) again using DOM/ARIA snapshots. Compare new page inventory with existing `ui-inventory.md`. For new pages not in any existing flow → create new flow directories. For existing flows → keep flow.md/scenarios.md as-is unless pages are gone (mark stale). Regenerate `qa/journeys/` specs for changed flows only.
 
-- **"2" / "add flows"** → Ask user which flows to add. Create new `F-NNN-*` directories. Run Phase 1 trace for those flows only → Phase 2 scenarios → Phase 3 TCs → Phase 4 execution. Existing flows untouched.
+- **"2" / "add flows"** → Ask user which flows to add. Create new `F-NNN-*` directories. Run Phase 1 trace (DOM/ARIA snapshots) → Phase 2 scenarios → append new `test.describe` blocks to the relevant `qa/journeys/J-NNN-<role>.spec.ts`. Existing journey specs untouched for unchanged flows.
 
-- **"3" / "re-run"** → Jump directly to Step W-11 (extract specs and run). Skip all discovery and generation.
+- **"3" / "re-run"** → Jump directly to Step W-11 (run journey specs). Skip all discovery and generation.
 
-- **"4" / "full refresh"** → Delete `qa/flows/`, `qa/knowledgebase/`, `qa/state.md`, `qa/crawl-state.json`. Keep `qa/.qa-config.json` and `qa/context/`. Then jump to Step W-2 (BFS crawl) — full Phase 1 restart with existing config.
+- **"4" / "full refresh"** → Delete `qa/flows/`, `qa/knowledgebase/`, `qa/journeys/`, `qa/state.md`, `qa/crawl-state.json`. Keep `qa/.qa-config.json` and `qa/context/`. Then jump to Step W-2 (BFS crawl) — full Phase 1 restart with existing config.
 
 ---
 
@@ -1008,21 +941,21 @@ Wait for user's choice.
 1. **Never hardcode URLs** — always `process.env.QA_APP_URL` or `page.goto('/')` (relative)
 2. **Never hardcode credentials** — always `process.env.QA_TEST_EMAIL`, `process.env.QA_TEST_PASSWORD`
 3. **Never use `networkidle`** — use `domcontentloaded` + `QA_PAGE_WAIT_MS` (configurable minimum wait)
-4. **Always use `capture()`** for screenshots in ALL discovery scripts — never raw `page.screenshot()` — prevents orphaned screenshots and ensures the `.dom.json` DOM sidecar is written automatically. This applies to bfs.js, every probe-*.js, and any ad-hoc exploration script written during the session.
-5. **Screenshot BEFORE credential fill, AFTER error check** — the PNG must show the clean empty form state, not credentials pre-filled by the agent. Reveal-hidden-content (W-2.4) runs AFTER screenshot for link discovery only. (See W-2.3 loop order.)
-5a. **Never guess SPA sub-routes in probe scripts** — SPAs use client-side routing. A direct `page.goto('${QA_APP_URL}dashboard/channels')` will 404 because the route doesn't exist on the server. Instead, load the authenticated entry point (e.g. `/dashboard`) and navigate via UI clicks — the same click-based Navigate step used in the BFS loop (W-2.3 step 2). If you must use `page.goto()` for a known anchor URL (e.g. the root `/dashboard`), always call `isErrorPage(page)` after navigation and skip `capture()` if it returns non-null.
-6. **Verify every navigation** — compare `page.url()` to intended URL; name screenshots by ACTUAL URL, not intended
-7. **Credentials gate** — do not write TCs until user confirms `.env.qa` is populated
+4. **Always use `snapshotPage()`** for discovery — never raw `page.screenshot()` during Phase 1/2. Screenshots are taken by Playwright automatically only on test failure during Phase 4. DOM/ARIA snapshots are the discovery record; PNGs are failure evidence.
+5. **Snapshot BEFORE credential fill** — run `snapshotPage()` before filling any form so the snapshot reflects the clean empty state. DOM extraction runs after for link discovery.
+5a. **Never guess SPA sub-routes in probe scripts** — SPAs use client-side routing. A direct `page.goto('${QA_APP_URL}dashboard/channels')` will 404 because the route doesn't exist on the server. Instead, load the authenticated entry point (e.g. `/dashboard`) and navigate via UI clicks. If you must use `page.goto()` for a known anchor URL, always check `page.url()` after navigation and skip snapshotting if it redirected to an error page.
+6. **Verify every navigation** — compare `page.url()` to intended URL; name snapshots by ACTUAL URL slug, not intended destination
+7. **Credentials gate** — do not write journey specs until user confirms `.env.qa` is populated
 8. **Relative URLs only** in test files — `'/'` not `'https://app.example.com/'`
 9. **Scope nav selectors** to `page.locator('nav, header').first()` — avoid footer duplicates
 10. **Never click destructive buttons** during BFS discovery — use the safe whitelist (W-2.5)
+11. **No duplicate test locations** — journey specs live only in `qa/journeys/`. Do not also write `TC-*.md` files or `specs/` files. One location, one truth.
 
 ### Performance
 
-11. **Configurable page wait** — `QA_PAGE_WAIT_MS` (default 2000ms) runs after every navigation. Tune per-app in `.env.qa`. Simple, predictable, works on every app.
-12. **BFS limits** — `QA_MAX_PAGES` (default 50) and `QA_MAX_DEPTH` (default 5) prevent infinite crawl and context exhaustion. Increase for large apps.
-13. **Disk state persistence** — `qa/crawl-state.json` written after every page. BFS survives context resets.
-14. **Content fingerprinting** — detects duplicate pages at different URLs. Prevents wasted screenshots and context.
-15. **Viewport screenshots by default** — only use `fullPage: true` for landing pages, long forms, or full inventories.
+12. **Configurable page wait** — `QA_PAGE_WAIT_MS` (default 2000ms) runs after every navigation. Tune per-app in `.env.qa`.
+13. **BFS limits** — `QA_MAX_PAGES` (default 50) and `QA_MAX_DEPTH` (default 5) prevent infinite crawl and context exhaustion.
+14. **Disk state persistence** — `qa/crawl-state.json` written after every page. BFS survives context resets.
+15. **Content fingerprinting** — detects duplicate pages at different URLs. Prevents wasted snapshots and context.
 16. **Reuse browser, fresh context** — launch browser once per session, `browser.newContext()` per flow, `context.close()` after each flow.
-17. **Lightweight coverage check** — use the inline script in "Phase 1 → Phase 2 Transition" (not the full Allure generator). Only run at phase boundaries.
+17. **Lightweight snapshot coverage check** — use the inline script in "Phase 1 → Phase 2 Transition". Only run at phase boundaries.

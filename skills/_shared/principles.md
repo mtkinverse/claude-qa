@@ -61,11 +61,16 @@ Order of preference when locating UI elements (applies to any tool):
 
 Each platform skill maps this hierarchy onto its tool's API.
 
-## 6. Screenshot Protocol
+## 6. Discovery Snapshot Protocol
 
-- Always use the platform's atomic capture wrapper (web: `scripts/qa-screenshot.js` `capture()`; macOS: equivalent). Never call raw screenshot APIs — they orphan files outside the audit trail.
-- Screenshot **AFTER** wait + verification + interaction (so the capture reflects final state, not transitional).
-- Name by ACTUAL observed identifier (URL/window title), not by intended target — prevents hallucination on redirects.
+**Web platform**: Discovery uses DOM/ARIA snapshots — not screenshots.
+- After each navigation, call `snapshotPage()` (defined in `skills/web/SKILL.md` W-2.5) to write a `.snapshot.json` containing the ARIA accessibility tree + structured DOM extract (headings, inputs, buttons, links, images, alerts).
+- Never call raw `page.screenshot()` during Phase 1 or Phase 2 discovery. Screenshots are taken automatically by Playwright only on test failure during Phase 4 execution.
+- Visual artifacts (images, icons, badges, illustrations) are identified from `role="img"`, `alt` text, `aria-label`, and DOM class names in the snapshot — not by reading PNG files.
+- Name snapshots by ACTUAL URL slug, not intended destination — prevents hallucination on redirects.
+- Snapshot **AFTER** wait + verification (so it reflects settled state, not transitional).
+
+**macOS / native platforms**: continue using the platform's atomic capture wrapper (screencapture + accessibility API). This DOM/ARIA rule applies to web only.
 
 ## 7. Session Limits
 
@@ -136,5 +141,6 @@ Default is headless. Set `QA_HEADLESS=false` in `.env.qa` to watch the browser w
 - `qa/classifier-log.jsonl`: append-only outcome trace, tail on resume.
 - `qa/state.md`: append per flow; full rewrite only at phase boundaries.
 - Runtime helper scripts: kept on disk; never regenerated cosmetically.
-- **Gated screenshot reads**: only Read screenshots immediately for `error-surfaced`, `auth-rejected-server`, `form-reset-silent`, `modal-opened`, `network-timeout`, terminal states, and ≤ 3 representative shots per flow. Mid-flow `navigated` / `dom-updated` outcomes log `(batch-read pending)` and stay on disk.
+- **No Read tool calls on PNG files during discovery** (web platform): DOM/ARIA snapshots are read as JSON — zero image-processing tokens. The only tool calls during Phase 1/2 are file reads on `.snapshot.json` and `.md` files.
 - `storageState` cached per role at `qa/.auth/<role>.json` — never re-login per flow.
+- **Journey specs are the single test artifact** (web platform): no TC markdown extraction step, no intermediate files. Phase 3 writes directly to `qa/journeys/`; Phase 4 runs them. No deduplication overhead.
