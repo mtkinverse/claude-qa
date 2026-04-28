@@ -1,5 +1,10 @@
 # Playwright Exploration Toolkit — Frontend Context Discovery
 
+> ⛔ **SCREENSHOTS ARE FORBIDDEN ON WEB (Phase 1 & Phase 2)**
+> Never call `page.screenshot()`, `locator.screenshot()`, or any screenshot API during discovery or scenario tracing.
+> Use `snapshotPage()` (DOM/ARIA JSON) exclusively for all observation. Screenshots in this file are reference patterns only — they apply to macOS/native or Phase 4 test failure capture, NOT to web exploration.
+> The screenshot sections below exist as API reference; invoking them during web Phase 1/2 violates the no-screenshot rule.
+
 Every Playwright API useful during **Phase 1 exploration**. Goal: build a complete picture
 of the app's UI, DOM structure, network behaviour, and state before writing a single test case.
 

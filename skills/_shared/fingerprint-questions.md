@@ -12,7 +12,7 @@ Before delegating to a platform skill, the root orchestrator answers these five 
 - App name + URL/path from Step 2
 - `.env.qa` values (auth flags, account tier, sandbox mode)
 - Files in `qa/context/` (PRDs, Figma, specs)
-- ONE quick probe — launch app + take ONE screenshot. No deeper exploration.
+- ONE quick probe — launch app. **macOS/native**: take ONE screenshot. **Web**: call `snapshotPage()` once — do NOT take a screenshot. No deeper exploration.
 
 Output is written to `qa/platform-fingerprint.md` ONCE. Never rewritten. Re-read on every resume.
 

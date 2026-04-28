@@ -1,12 +1,14 @@
 ---
 name: native-qa
 description: >
-  Generic QA skill for Claude Code covering any platform (macOS, iOS, Android, Windows, web). Two-phase workflow: Phase 1 = pure exploration — agent selects platform, initializes workspace, launches the app, traces every happy flow step-by-step with screenshots at every single action, maps flows, saves all knowledge to qa/knowledgebase/. Phase 1 ends with a credentials gate — no test cases are generated yet. Phase 2 = full coverage — after user provides credentials in .env.qa, agent traces auth-gated flows, generates every possible scenario per flow (happy + negative + edge + security + a11y), and writes all TC files. ALWAYS asks platform first. ALWAYS screenshots every step in Phase 1. NEVER generates TCs before credentials are confirmed.
+  Generic QA skill for Claude Code covering any platform (macOS, iOS, Android, Windows, web). Two-phase workflow: Phase 1 = pure exploration — agent selects platform, initializes workspace, launches the app, traces every happy flow step-by-step (macOS: screenshots at every action; Web: DOM/ARIA snapshots via snapshotPage() — NEVER screenshots), maps flows, saves all knowledge to qa/knowledgebase/. Phase 1 ends with a credentials gate — no test cases are generated yet. Phase 2 = full coverage — after user provides credentials in .env.qa, agent traces auth-gated flows, generates every possible scenario per flow (happy + negative + edge + security + a11y), and writes all TC files. ALWAYS asks platform first. macOS: ALWAYS screenshots every step in Phase 1. Web: ALWAYS use snapshotPage() — screenshots are FORBIDDEN on web during Phase 1 and Phase 2. NEVER generates TCs before credentials are confirmed.
 ---
 
 # Native App QA Skill
 
-An autonomous QA engineer for **any native or web application**. It asks you to select a platform, initializes a typed workspace, launches your app, takes screenshots for visual analysis, discovers every UI flow, and generates comprehensive test cases — organized by flow, feature, or risk priority.
+An autonomous QA engineer for **any native or web application**. It asks you to select a platform, initializes a typed workspace, launches your app, discovers every UI flow, and generates comprehensive test cases — organized by flow, feature, or risk priority.
+
+> ⛔ **WEB PLATFORM — NO SCREENSHOTS**: On web, discovery uses DOM/ARIA snapshots exclusively (`snapshotPage()`). Calling `page.screenshot()` or any screenshot method during Phase 1 or Phase 2 is **forbidden**. Screenshots are taken automatically by Playwright only on test failure during Phase 4. macOS/native platforms use screenshots normally.
 
 **Supported platforms**: macOS ✅ | Web (Playwright) ✅ | Windows 🔜 | iOS 🔜 | Android 🔜
 
@@ -143,7 +145,7 @@ Do NOT just acknowledge. The FIRST and ONLY action is to write the checkpoint. N
 > |-------|-------|
 > | Flows completed | [N] — [names] |
 > | Flows pending | [N] — [names] |
-> | Screenshots taken | [N] |
+> | Snapshots / screenshots taken | [N] (web: DOM/ARIA snapshots; macOS: screenshots) |
 > | TCs written | [N] |
 > | Stopped at | [exact step — e.g. 'Mid F-003 trace, step 4 of 7'] |
 >
@@ -177,7 +179,7 @@ After writing `flow.md` and the discovery evidence table for any flow:
 1. **Append to `qa/state.md`** — mark this flow done, list the next flow pending. Do NOT rewrite the entire state file — just update the Flows table and Resume Instructions section.
 2. **Tell the user**:
 
-> "Flow **F-NNN — [Name]** complete ✅ ([N] screenshots).
+> "Flow **F-NNN — [Name]** complete ✅ ([N] snapshots/screenshots).
 >
 > **To continue**: say **'continue'** or start a new conversation and say:
 > `Read qa/state.md and continue Phase 1. Next flow: F-[NNN+1] — [name].`"
@@ -390,7 +392,7 @@ Write a short README in each `qa/` subdirectory explaining its purpose. Each REA
 **Key points to include**:
 - `qa/context/` — the only directory the user populates manually. Accepts: Figma PNGs, PRDs (.md/.txt), specs, screenshots. Agent reads everything here in Step 3.
 - `qa/credentials/` — structure only, NEVER real values. Real credentials go in `.env.qa` (gitignored).
-- `qa/knowledgebase/` — auto-generated during Phase 1. Contains screenshots, ui-inventory.md, nav-graph.md, personas.md.
+- `qa/knowledgebase/` — auto-generated during Phase 1. Web: contains `aria-snapshots/` (DOM/ARIA JSON — no PNGs). macOS: contains `screenshots/`. Both: ui-inventory.md, nav-graph.md, personas.md.
 - `qa/README.md` — include a "Resume a session" section: `Read qa/state.md and continue QA for [AppName]`
 
 Keep each README under 15 lines — enough for any human opening the directory to understand what it is. Do NOT include tables of contents or detailed howtos.
@@ -526,7 +528,7 @@ Extract: named flows, features, user journeys, navigation paths, edge cases, aut
 > Describe what you know — what the app does, key flows, things to test or skip, known edge cases.
 >
 > **Option 3 — Discover it yourself**
-> I'll explore **[AppName]** visually from scratch — screenshot every screen and map every flow.
+> I'll explore **[AppName]** from scratch — map every flow using DOM/ARIA snapshots (web) or screenshots (macOS).
 >
 > Which would you like? (1 / 2 / 3)"
 
