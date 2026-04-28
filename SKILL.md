@@ -99,13 +99,13 @@ if [ ! -d "qa" ] || [ ! -f "qa/.qa-config.json" ]; then
 elif [ ! -d "qa/flows" ] && [ ! -d "qa/features" ] && [ ! -d "qa/test-cases/P1-critical" ]; then
   echo "CONFIGURED_NO_FLOWS"
 else
-  # HAS_SPECS: journey specs exist — prompt run options first
-  SPEC_COUNT=$(find qa/journeys -name "*.spec.ts" 2>/dev/null | wc -l | tr -d ' ')
-  if [ "$SPEC_COUNT" -gt 0 ]; then
+  # HAS_SPECS: scenario modules or standalone specs exist — prompt run/update options
+  SPEC_COUNT=$(find qa/tests qa/journeys -name "*.spec.ts" 2>/dev/null | wc -l | tr -d ' ')
+  MODULE_COUNT=$(find qa/flows -name "*.scenarios.ts" 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$SPEC_COUNT" -gt 0 ] || [ "$MODULE_COUNT" -gt 0 ]; then
     echo "HAS_SPECS"
   else
-    TC_COUNT=$(find qa -name "TC-*.md" 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$TC_COUNT" -eq 0 ]; then
+    if [ ! -d "qa/flows" ] || [ "$(find qa/flows -name 'scenarios.md' | wc -l | tr -d ' ')" -eq 0 ]; then
       echo "EXPLORATION_COMPLETE"
     else
       echo "HAS_WORKSPACE"
@@ -119,7 +119,7 @@ fi
 | `INIT` | → **Step 1: INIT MODE** |
 | `CONFIGURED_NO_FLOWS` | → **Step 2: App Selection** (workspace ready, need discovery) |
 | `EXPLORATION_COMPLETE` | → Load the platform SKILL.md and jump directly to its **Phase 2** entry point (Web → Step W-7, macOS → Step 8). Announce: *"Phase 1 already complete — continuing to Phase 2."* |
-| `HAS_SPECS` | → **Run Mode** — journey specs detected. Ask: *"Test suites found. (1) Run all journeys end-to-end (2) Run one journey by ID (3) Run specific TCs by ID (4) Regenerate / update tests"*. Write `qa/run-state.md`, then execute `node qa/run.js [args]`. Skip exploration entirely. |
+| `HAS_SPECS` | → **Run Mode** — scenario modules or specs detected. Ask: *"Test suite found. (1) Run all journeys end-to-end (`node qa/run.js --suite journeys`) (2) Run one journey by ID (3) Run standalone flow specs (`node qa/run.js --suite standalone`) (4) Regenerate / update tests"*. Write `qa/run-state.md`, then execute `node qa/run.js [args]`. Skip exploration entirely. |
 | `HAS_WORKSPACE` | → Load the platform SKILL.md and jump to its **Update Mode** section (Web → Step W-13, macOS → Step 12). Announce: *"Existing workspace found — entering update mode."* |
 
 ---
@@ -284,7 +284,7 @@ All platforms share a single state file: `qa/state.md`. Testing a different app 
 ### Journey Specs — Written
 | Journey | File | Scenarios | Status |
 |---------|------|-----------|--------|
-| J-001 | `qa/journeys/J-001-member.spec.ts` | [N] | Written |
+| F-001 | `qa/flows/F-001-*/F-001.scenarios.ts` + `qa/tests/F-001-*.spec.ts` | [N] | Written | J-000-anonymous |
 
 ### Journey Specs — Pending
 #### [Role] ([N] scenarios remaining)
@@ -354,7 +354,7 @@ Every directory gets a README so anyone opening the workspace understands what i
 ```bash
 mkdir -p qa/planning qa/guardrails qa/credentials qa/scope
 mkdir -p qa/knowledgebase/aria-snapshots
-mkdir -p qa/journeys
+mkdir -p qa/journeys qa/tests qa/journey-todo
 mkdir -p qa/context/feature-specs qa/context/figma-screens
 mkdir -p qa/evidence qa/runs
 ```
@@ -627,7 +627,7 @@ The platform skill is **fully self-contained** — it carries everything needed 
 |-------|-------|-------------|
 | **Phase 1: Discovery** | Steps 4–7 | App metadata → launch → explore → nav graph → personas → trace E2E journeys → flow.md |
 | **Phase 2: Scenarios** | Step 8 | Credential acquisition (if needed) → auth tracing → scenario generation → scenarios.md |
-| **Phase 3: Test Cases** | Step 9 | Journey spec generation → `qa/journeys/J-NNN-<role>.spec.ts` (shippable, no intermediate TC-*.md files) |
+| **Phase 3: Test Cases** | Step 9 | Three-layer spec generation (one flow per context window): `qa/flows/F-NNN-*/F-NNN.scenarios.ts` (functions) + `qa/tests/F-NNN-*.spec.ts` (standalone) + `qa/journeys/J-NNN-<role>.spec.ts` (E2E sequential). No TC-*.md files. |
 | **Phase 4: Execution** | Steps 10–11 | Extract specs → run tests → unified report |
 | **Update mode** | Step 12 | Re-discover, add flows, full refresh |
 

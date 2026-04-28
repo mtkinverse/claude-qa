@@ -11,8 +11,8 @@ This file provides guidance to Claude Code when working with code in this reposi
 3. Reading prior knowledge from `qa/context/` or discovering the app via DOM/ARIA snapshots (web) or screenshots (macOS)
 4. **Phase 1** — Seed crawl → DOM/ARIA snapshots (web) / screenshots (macOS) → nav graph → personas → E2E journeys → `flow.md` per journey → state checkpoints
 5. **Phase 2** — After credentials provided, trace auth-gated flows → generate `scenarios.md` per flow
-6. **Phase 3** — Write shippable journey specs to `qa/journeys/J-NNN-<role>.spec.ts` (single source of truth — no TC markdown files, no separate specs/ directory)
-7. **Phase 4** — Run `qa/journeys/` → pass/fail report
+6. **Phase 3** — Write scenario functions (`qa/flows/F-NNN-*/F-NNN.scenarios.ts`) + standalone wrappers (`qa/tests/`) + sequential E2E journeys (`qa/journeys/`) + journey todo files (`qa/journey-todo/`). One flow per context window — no context bloat.
+7. **Phase 4** — Run `qa/tests/` (standalone) or `qa/journeys/` (E2E) → pass/fail report
 
 Context is reset after each journey (DOM snapshots and accumulated tool output fill context). A state file `qa/state.md` persists all knowledge across resets.
 
@@ -156,7 +156,7 @@ The skill detects its mode after platform selection:
 2. Ask user how to provide credentials (check `.env.qa` / provide in chat / self-register)
 3. Trace auth-gated flows with DOM/ARIA snapshots
 4. Generate all scenarios per flow
-5. Write journey specs to `qa/journeys/J-NNN-<role>.spec.ts` — one per role, all scenarios as `test.describe` blocks
+5. Write scenario functions (`qa/flows/F-NNN-*/F-NNN.scenarios.ts`) + standalone specs (`qa/tests/`) + E2E journey specs (`qa/journeys/`) — one flow per context window
 6. **Generate report** (`npm run qa:report:open`) — same unified report, now includes all 4 phases
 
 ---
@@ -171,7 +171,7 @@ qa/
 ├── state.md                     ← Session checkpoint — one global state file
 ├── run.js                       ← Cross-platform runner (node qa/run.js)
 ├── package.json                 ← Self-contained deps for qa/ (generated in Phase 3)
-├── playwright.config.ts         ← Points testDir at qa/journeys/
+├── playwright.config.ts         ← testMatch covers tests/ + journeys/; no projects array
 ├── planning/platforms.md
 ├── guardrails/do-and-dont.md
 ├── credentials/access.md
@@ -186,14 +186,22 @@ qa/
 │   ├── personas.md              ← Discovered user personas
 │   ├── journey-inventory.md     ← All E2E journeys with coverage tracking
 │   └── aria-snapshots/          ← DOM/ARIA snapshot JSON per visited page (web; gitignored)
-├── journeys/                    ← SHIPPABLE TEST SUITE — single source of truth
-│   ├── J-000-anonymous.spec.ts  ← All unauthenticated scenarios
-│   ├── J-001-member.spec.ts     ← All member-role scenarios (test.describe per flow)
+├── tests/                       ← STANDALONE SPECS — one file per flow, independently runnable
+│   ├── F-001-marketing-landing.spec.ts   ← thin wrapper; imports F-001.scenarios.ts
+│   ├── F-002-pricing.spec.ts
+│   └── F-NNN-<slug>.spec.ts
+├── journeys/                    ← SEQUENTIAL E2E JOURNEYS — single browser session per journey
+│   ├── J-000-anonymous.spec.ts  ← calls scenario functions via test.step() chain
+│   ├── J-001-free.spec.ts       ← auth session applied at file level via test.use()
 │   └── J-NNN-<role>.spec.ts
+├── journey-todo/                ← GENERATION + RUNTIME TRACKING — one file per journey
+│   ├── J-000-anonymous.todo.md  ← which flows written; which steps passed/failed in Phase 4
+│   └── J-NNN-<role>.todo.md
 └── flows/
     └── F-NNN-[flow-slug]/
         ├── flow.md              ← Journey map + DOM/ARIA discovery evidence table
-        └── scenarios.md         ← All test scenarios for this flow (documentation only)
+        ├── scenarios.md         ← All test scenarios for this flow (documentation only)
+        └── F-NNN.scenarios.ts   ← Exported async scenario functions (the reusable core)
 ```
 
 ### Feature-based
@@ -218,8 +226,11 @@ Three session artefacts carry context across resets. All three are cheap to re-r
 | `qa/progress.jsonl` | **Append-only step ledger** | One line per step event (≤150 bytes) — `{ts,flow,step,action,url,outcome}`. Resume reads `tail -n 30` only; never full-read. Committed (audit trail). |
 | `qa/flows/F-NNN-*/manifest.jsonl` | **Per-flow planned-step checklist** | One line per planned step with mutable `status` (`pending` / `done` / `skipped(reason)` / `blocked(reason)`). The agent drives every line to terminal status before advancing — see `skills/_shared/engagement-protocol.md` → *End-to-End Completion is Mandatory*. Resume: `grep -v '"status":"done"'` picks the next step. |
 | `qa/run-state.md` | **Run-time todos** | One row per journey (`⬜ pending` → `⏳ running` → `✅ done` / `❌ failed`). Written before the run, updated after each journey. Never rewritten in full — only the status cell changes. On re-trigger, agent skips `✅` rows and resumes from the first non-done row. |
-| `qa/journeys/J-NNN-*.spec.ts` | Generated in Phase 3 (W-10) | One journey per role — all scenarios organized as `test.describe` blocks per flow. **Single source of truth** — no separate specs/ or TC-*.md files. Shippable as-is. |
-| `qa/run.js` | Generated in Phase 3 (W-10) | Cross-platform Node.js runner (Mac / Linux / Windows). Runs `qa/journeys/`. No shell scripts. |
+| `qa/flows/F-NNN-*/F-NNN.scenarios.ts` | Generated in Phase 3 (W-10), one per flow | Exported async scenario functions — the reusable core. Called by both standalone wrappers and journey specs. No Playwright fixtures; receives `page` + `context` from caller. |
+| `qa/tests/F-NNN-*.spec.ts` | Generated in Phase 3 (W-10) | Thin standalone wrappers — one per flow. Import scenario functions; wrap each in `test()`. Run any flow in isolation: `node qa/run.js --flow F-001`. |
+| `qa/journeys/J-NNN-*.spec.ts` | Generated in Phase 3 (W-10) | Sequential E2E journeys — one per role. Single browser session; scenario functions called in order via `test.step()` for granular step-level reporting. Shippable as-is. |
+| `qa/journey-todo/J-NNN-*.todo.md` | Created at Phase 3 start; updated per flow + per run | Generation progress (which flows written) + Phase 4 runtime execution status (which steps passed/failed). Agent reads this on resume to find the next pending flow. |
+| `qa/run.js` | Generated in Phase 3 (W-10) | Cross-platform Node.js runner. Supports `--flow F-001`, `--journey J-000`, `--suite standalone`, `--suite journeys`, or no args (runs everything). |
 | `qa/package.json` | Generated in Phase 3 (W-10) | Self-contained deps (`@playwright/test`, `dotenv`); makes `qa/` independently runnable after `npm install`. |
 
 Strategy-specific resume artefacts (e.g. `qa/crawl-state.json` for BFS, `qa/trace-state.json` for targeted-trace) are owned by the platform skill and auto-saved after every page so mid-strategy resume is free.
@@ -285,8 +296,13 @@ cp .env.example .env.qa
 - Each flow directory has `flow.md` and `scenarios.md` (no `test-cases/` subdirectory for web)
 - `flow.md` includes a Discovery Evidence table with snapshot file references (web) or screenshot refs (macOS)
 - Each `scenarios.md` has at least 5 scenarios covering multiple categories
-- **Web**: `qa/journeys/J-NNN-<role>.spec.ts` exists — one per role, all scenarios as `test.describe` blocks. **No TC-NNN-*.md files, no specs/ directory.**
-- `qa/journeys/` files pass the Quality Contract (no placeholders, no bare waitForTimeout, semantic locators)
+- **Web**: `qa/flows/F-NNN-*/F-NNN.scenarios.ts` exists — one per flow, all scenarios as exported async functions. **No TC-NNN-*.md files.**
+- **Web**: `qa/tests/F-NNN-<slug>.spec.ts` exists — one per flow, thin wrappers importing the scenario module
+- **Web**: `qa/journeys/J-NNN-<role>.spec.ts` exists — one per role, sequential E2E using `test.step()` chains
+- **Web**: `qa/journey-todo/J-NNN-<role>.todo.md` exists — generation progress + runtime step tracking
+- All three spec layers pass the Quality Contract (no placeholders, no bare waitForTimeout, semantic locators, no hardcoded creds)
+- `npx playwright test tests/F-001-*.spec.ts` runs the standalone flow without error
+- `npx playwright test journeys/J-000-anonymous.spec.ts` runs the full anonymous E2E journey
 - No credentials appear in any tracked file
 - Session report (`qa/reports/<app-slug>-<timestamp>.html`) generated at **phase boundaries only** (Phase 1→2, 2→3, 3→4, final) or when user explicitly requests — NOT on every stop/checkpoint.
 
@@ -343,5 +359,10 @@ allure-results/
 allure-report/
 ```
 
-Commit `qa/` itself — it is the team's living QA documentation. **Commit `qa/journeys/`** — it is the shippable test suite.
+Commit `qa/` itself — it is the team's living QA documentation. **Commit all three test layers**:
+- `qa/flows/F-NNN-*/F-NNN.scenarios.ts` — scenario functions (reusable core)
+- `qa/tests/` — standalone flow specs
+- `qa/journeys/` — sequential E2E journey specs
+- `qa/journey-todo/` — generation and runtime tracking
+
 Never commit `qa/knowledgebase/aria-snapshots/` (large JSON files), `qa/knowledgebase/screenshots/` (large binaries), `qa/.auth/` (session tokens), `qa/crawl-state.json` (ephemeral BFS state), or anything under `qa/credentials/` with real values.

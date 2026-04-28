@@ -13,13 +13,13 @@ Four continuous phases that run end-to-end without stopping for user approval be
 ```
 Phase 1: Discovery         → Seed crawl → DOM/ARIA snapshots → nav graph → personas → E2E journeys → flow.md
 Phase 2: Scenario Planning → Read flow.md → generate scenarios.md per flow
-Phase 3: Test Generation   → Read scenarios.md → write journey specs to qa/journeys/ (shippable suite)
-Phase 4: Test Execution    → Run qa/journeys/ specs → pass/fail → report
+Phase 3: Test Generation   → Read scenarios.md → write scenario functions (qa/flows/F-NNN/F-NNN.scenarios.ts) + standalone wrappers (qa/tests/) + sequential journeys (qa/journeys/)
+Phase 4: Test Execution    → Run qa/tests/ (standalone) or qa/journeys/ (E2E) → pass/fail → report
 ```
 
 **No image processing**: Discovery uses DOM snapshots and ARIA accessibility trees — not screenshots. Screenshots are taken by Playwright only on test failure during Phase 4. Visual artifacts (images, icons, badges, illustrations) are identified from ARIA roles, `alt` attributes, and DOM structure — not by reading PNG files.
 
-**Single source of truth for tests**: Phase 3 writes runnable journey specs directly to `qa/journeys/`. There are no separate TC-NNN-*.md files in flow directories. `qa/journeys/` is the shippable suite — zip it and hand it off. Phase 4 runs it.
+**Three-layer test architecture**: Phase 3 produces three artifacts per flow — (1) `qa/flows/F-NNN-*/F-NNN.scenarios.ts` (exported async functions, the reusable core), (2) `qa/tests/F-NNN-<slug>.spec.ts` (thin standalone wrappers — run any flow in isolation), (3) `qa/journeys/J-NNN-<role>.spec.ts` (sequential E2E journeys — shared browser session, `test.step()` chains). No TC-NNN-*.md files anywhere.
 
 **Continuous execution**: phases flow into each other automatically. The agent only stops for:
 - **Credentials required** — must ask user for auth/API keys
@@ -92,10 +92,10 @@ Handled by main SKILL.md Steps 1-2. Confirm:
 - `QA_APP_URL` is set in `.env.qa`
 - `qa/knowledgebase/aria-snapshots/` directory exists (DOM/ARIA snapshot store — replaces screenshots/ for discovery)
 
-Also create `qa/journeys/` now — this is where Phase 3 writes shippable specs:
+Create the Phase 3 output directories now:
 
 ```bash
-mkdir -p qa/knowledgebase/aria-snapshots qa/journeys qa/runs
+mkdir -p qa/knowledgebase/aria-snapshots qa/journeys qa/tests qa/journey-todo qa/runs
 ```
 
 Then write the Playwright config to `qa/playwright.config.ts`:
@@ -115,20 +115,19 @@ if (!process.env.QA_APP_URL) {
   console.warn('[qa] QA_APP_URL is not set. Preflight (Step W-1.5) will prompt for it.');
 }
 const HEADLESS = process.env.QA_HEADLESS !== 'false';
-
 const CI = !!process.env.CI;
 // __dirname = qa/ directory; REPO_ROOT is always its parent regardless of cwd
 const REPO_ROOT = path.resolve(__dirname, '..');
-const AUTH_FILE = path.join(REPO_ROOT, 'qa/.auth/user.json');
 
 export default defineConfig({
-  testDir:       path.join(REPO_ROOT, 'qa/journeys'),
-  testMatch:     '**/*.spec.ts',
-  fullyParallel: true,
+  // testDir = qa/ — testMatch selects both standalone tests/ and E2E journeys/
+  testDir:       __dirname,
+  testMatch:     ['tests/**/*.spec.ts', 'journeys/**/*.spec.ts'],
+  fullyParallel: false,  // journeys run sequentially (shared session)
   forbidOnly:    CI,
   retries:       CI ? 2 : 0,
-  workers:       CI ? 4 : 2,
-  timeout:       30_000,
+  workers:       CI ? 2 : 1,
+  timeout:       60_000,  // journeys can be long
   expect:        { timeout: 5_000 },
   reporter: [
     ['list'],
@@ -145,22 +144,12 @@ export default defineConfig({
     navigationTimeout: 15_000,
     locale:            'en-US',
   },
-  projects: [
-    { name: 'setup', testMatch: /auth\.setup\.ts/ },
-    { name: 'chromium-public', use: { ...devices['Desktop Chrome'] } },
-    {
-      name: 'chromium',
-      use: { ...devices['Desktop Chrome'], storageState: AUTH_FILE },
-      dependencies: ['setup'],
-    },
-    { name: 'mobile-chrome', use: { ...devices['Pixel 7'] } },
-  ],
   outputDir:   path.join(REPO_ROOT, 'qa/evidence/playwright/'),
   snapshotDir: path.join(REPO_ROOT, 'qa/knowledgebase/visual-baselines/'),
 });
 ```
 
-This reads all config from `.env.qa` dynamically — no hardcoded URLs or credentials. Write it fresh each session to `qa/` (gitignored). All run commands use `--config qa/playwright.config.ts`.
+This reads all config from `.env.qa` dynamically — no hardcoded URLs or credentials. Write it fresh each session to `qa/`. All run commands use `--config qa/playwright.config.ts`.
 
 ---
 
@@ -706,135 +695,362 @@ For each flow in `qa/flows/`, read `flow.md` and generate ALL scenarios using th
 
 ---
 
-## Phase 3: Test Case Generation — Shippable Journey Suite
+## Phase 3: Test Case Generation — Three-Layer Spec Suite
 
-**Goal**: Write runnable Playwright journey specs directly to `qa/journeys/` — the shippable test suite. No intermediate TC markdown files. No duplicate locations.
+**Goal**: Write shippable, runnable test code in three coordinated layers — scenario functions, standalone wrappers, and sequential E2E journeys. No intermediate TC markdown files.
 **Input**: `qa/flows/F-NNN-*/scenarios.md` files from Phase 2 + DOM/ARIA snapshots from Phase 1.
-**Output**: `qa/journeys/J-NNN-<role>.spec.ts` — one spec file per role, containing ALL scenarios for that role as `test.describe` blocks organized by flow. Also writes `qa/run.js`, `qa/package.json`, and `qa/playwright.config.ts` to make `qa/` independently runnable.
-**Transition to Phase 4**: Automatic — after journeys are written and quality-checked, Phase 4 runs them.
+**Output**:
+  - `qa/flows/F-NNN-<slug>/F-NNN.scenarios.ts` — exported async scenario functions (reusable core)
+  - `qa/tests/F-NNN-<slug>.spec.ts` — thin standalone spec wrappers (run any flow in isolation)
+  - `qa/journeys/J-NNN-<role>.spec.ts` — sequential E2E journeys (shared browser session, `test.step()` chains)
+  - `qa/journey-todo/J-NNN-<role>.todo.md` — generation + runtime tracking per journey
 
-> **Single source of truth**: `qa/journeys/` is the only location test code lives. There are no `test-cases/` subdirectories inside flows. Scenarios and test logic coexist in the journey spec — `flow.md` and `scenarios.md` are documentation only.
+**Transition to Phase 4**: Automatic — after all flow specs written and journeys assembled, Phase 4 runs them.
+
+**Context management — CRITICAL**: Write ONE flow's `F-NNN.scenarios.ts` per context window. After each flow:
+1. Write `F-NNN.scenarios.ts` + `qa/tests/F-NNN-<slug>.spec.ts`
+2. Append `test.step()` calls for this flow into the relevant `qa/journeys/J-NNN.spec.ts`
+3. Mark flow done in `qa/journey-todo/J-NNN.todo.md`
+4. Checkpoint `qa/state.md`
+5. Tell user: *"F-NNN done ([N] functions). Next: F-[NNN+1] — [name]. Say 'continue'."*
+
+Never write multiple flows in one context window if the previous flow had >25 functions.
 
 ---
 
-### Step W-10: Journey Spec Writing
+### Step W-10: Three-Layer Spec Writing
 
-**Quality Contract — every journey spec MUST satisfy ALL of these before Phase 4:**
+**Quality Contract — every scenario function and spec file MUST satisfy ALL of these before Phase 4:**
 1. **Syntactically valid TypeScript** — no missing `await`, no unresolved imports, no `any` on assertions.
-2. **Logically complete** — every `test()` block has a meaningful `expect()` assertion. No `// TODO`, no empty `expect()`.
+2. **Logically complete** — every function body has a meaningful `expect()` assertion. No `// TODO`, no empty assertions.
 3. **No placeholder values** — no `[selector]`, `[route]`, `[label]`, `[value]` remaining.
 4. **No hardcoded credentials** — all creds via `process.env.QA_*`.
-5. **Semantic locators preferred** — `getByRole` > `getByLabel` > `getByTestId` > CSS. CSS only with an explanatory comment.
+5. **Semantic locators preferred** — `getByRole` > `getByLabel` > `getByTestId` > CSS. CSS only with a comment.
 6. **No bare `waitForTimeout`** — replace with `waitForSelector`, `waitForResponse`, `waitForURL`, or `waitForFunction`.
-7. **`storageState` at `test.use` level** — never re-login inside a test that has a cached session.
+7. **storageState set at describe level or via journey config** — never re-login inside a function that expects a cached session.
 
 **Standards:**
-- Use `waitUntil: 'domcontentloaded'` (never `networkidle` on SPAs)
+- `waitUntil: 'domcontentloaded'` (never `networkidle` on SPAs)
 - All URLs are relative — `page.goto('/')` not `page.goto('https://...')`
-- `baseURL` comes from `QA_APP_URL` via `qa/playwright.config.ts`
+- `baseURL` from `QA_APP_URL` via `qa/playwright.config.ts`
 - Credentials always from `process.env.QA_TEST_EMAIL` — never hardcoded
-- Locators derived from DOM/ARIA snapshots (Phase 1) — use `aria-label`, `role`, `name`, `placeholder` values observed in `.snapshot.json` files
+- Locators derived from DOM/ARIA snapshots — use `aria-label`, `role`, `name`, `placeholder` values from `.snapshot.json` files
 
-**Journey spec structure** (one file per role, all flows for that role):
+---
+
+#### Layer 1: Scenario Functions (`qa/flows/F-NNN-<slug>/F-NNN.scenarios.ts`)
+
+Each scenario from `scenarios.md` becomes an exported async function that receives `page` and `context` from the caller. Functions are plain async — no Playwright fixtures, no imports from `@playwright/test` fixture types beyond `Page` and `BrowserContext`:
 
 ```typescript
-// qa/journeys/J-001-member.spec.ts
-import { test, expect } from '@playwright/test';
-import { AxeBuilder } from '@axe-core/playwright';
-import * as fs from 'fs';
-import * as path from 'path';
+// qa/flows/F-001-marketing-landing/F-001.scenarios.ts
+// Callable from standalone tests (qa/tests/) OR journey specs (qa/journeys/)
+// Standalone: npx playwright test tests/F-001-marketing-landing.spec.ts
+// Journey:    npx playwright test journeys/J-000-anonymous.spec.ts
+//
+// Entry state: any (functions navigate as needed)
+// Exit state:  documented per function in JSDoc
+
+import { Page, BrowserContext, expect } from '@playwright/test';
 import * as dotenv from 'dotenv';
-dotenv.config({ path: require('path').resolve(__dirname, '../../.env.qa') });
+import * as path from 'path';
+dotenv.config({ path: path.resolve(__dirname, '../../../.env.qa') });
 
-const BASELINE_DIR = path.resolve(__dirname, '../../qa/knowledgebase/visual-baselines');
-const BASELINE_PATH = path.join(BASELINE_DIR, 'visual-baseline.png');
+/**
+ * S-001-01: Happy Path — home loads with hero + CTAs
+ * Entry: any URL  |  Exit: page is at '/'
+ */
+export async function S_001_01_happyPath(page: Page, _ctx: BrowserContext): Promise<void> {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByRole('heading', { name: /Say hello/i })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Sign up' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Log in' })).toBeVisible();
+}
 
-// All member-role scenarios in session order
-// storageState path is relative to rootDir (= qa/) — do NOT prefix with 'qa/'
-test.use({ storageState: '.auth/member.json' });
+/**
+ * S-001-02: CTA — "Sign up" routes to /account (signup mode)
+ * Entry: page is at '/'  |  Exit: page is at '/account'
+ */
+export async function S_001_02_ctaSignUp(page: Page, _ctx: BrowserContext): Promise<void> {
+  await page.getByRole('link', { name: 'Sign up' }).click();
+  await page.waitForURL(/\/account/, { timeout: 10000 });
+  await expect(page.getByRole('textbox', { name: /email/i })).toBeVisible();
+}
 
-// ── F-001: [Flow Name] ────────────────────────────────────────────
-test.describe('F-001: [Flow Name]', () => {
+/**
+ * S-001-06: Negative — demo widget "Type a message…" must not submit
+ * Entry: any  |  Exit: page is at '/', no navigation occurred
+ */
+export async function S_001_06_demoWidgetNoSubmit(page: Page, _ctx: BrowserContext): Promise<void> {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  const requests: string[] = [];
+  page.on('request', r => requests.push(r.url()));
+  await page.getByPlaceholder(/type a message/i).fill('hello');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(500);
+  const postsFired = requests.filter(u => u.includes('/api') || u.includes('/chat'));
+  await expect(page).toHaveURL('/');
+  if (postsFired.length > 0) throw new Error(`Unexpected API call from demo widget: ${postsFired[0]}`);
+}
 
-  test('S-001-01: [happy path scenario]', async ({ page, context }) => {
-    await page.goto('/path', { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => document.body.innerText.length > 50, { timeout: 15000 }).catch(() => {});
-    // locators from snapshot: dom.buttons[name="Submit"], dom.inputs[placeholder="Email"]
-    await page.getByRole('button', { name: 'Submit' }).click();
-    await expect(page.getByRole('heading', { name: 'Success' })).toBeVisible();
+// ... one exported function per scenario in scenarios.md
+// Naming: S_NNN_NN_camelCaseDescription — matches scenario ID exactly
+```
+
+**Rules for scenario functions:**
+- **Self-contained navigation**: every function navigates to its required entry URL at the start (unless the JSDoc explicitly states it continues from the caller's position)
+- **No cross-function calls**: functions do NOT call other scenario functions
+- **Entry/exit documented**: JSDoc `Entry:` / `Exit:` lines tell the journey what state is left after calling this function
+- **Journey-continuation functions**: in the journey spec, successive `test.step()` calls share the same `page`. If function N's exit state is function N+1's entry state, skip the redundant `page.goto()` in function N+1 — note this in the JSDoc
+
+---
+
+#### Layer 2: Standalone Spec Wrappers (`qa/tests/F-NNN-<slug>.spec.ts`)
+
+Thin files that import the scenario module and wrap each exported function in a `test()` block. In standalone mode, each test gets a fresh Playwright page — functions that rely on prior navigation should call `page.goto()` themselves (the scenario functions already do this):
+
+```typescript
+// qa/tests/F-001-marketing-landing.spec.ts
+import { test } from '@playwright/test';
+import * as F001 from '../flows/F-001-marketing-landing/F-001.scenarios';
+
+test.describe('F-001: Marketing Landing', () => {
+
+  test('S-001-01: Happy path — home loads', async ({ page, context }) => {
+    await F001.S_001_01_happyPath(page, context);
   });
 
-  test('S-001-02: [negative / edge case]', async ({ page, context }) => {
-    await page.goto('/path', { waitUntil: 'domcontentloaded' });
-    await page.getByLabel('Email').fill('not-an-email');
-    await page.getByRole('button', { name: 'Submit' }).click();
-    await expect(page.getByRole('alert')).toContainText(/invalid|error/i);
+  test('S-001-02: CTA — Sign up routes to /account', async ({ page, context }) => {
+    await page.goto('/');  // explicit reset — this test's entry state is '/'
+    await F001.S_001_02_ctaSignUp(page, context);
   });
 
-});
+  test('S-001-06: Demo widget — no submit on Enter', async ({ page, context }) => {
+    await F001.S_001_06_demoWidgetNoSubmit(page, context);
+  });
 
-// ── F-002: [Next Flow] ────────────────────────────────────────────
-test.describe('F-002: [Next Flow]', () => {
-  // ... all scenarios for this flow
 });
 ```
 
-Write one journey file per role. Process roles in order:
-1. Read all `scenarios.md` files for flows that belong to this role
-2. For each scenario in each flow: write a `test()` block inside the flow's `test.describe()` using locators derived from the Phase 1 ARIA/DOM snapshots
-3. Write the complete journey spec to `qa/journeys/J-NNN-<role>.spec.ts`
+Run standalone: `npx playwright test tests/F-001-marketing-landing.spec.ts`
 
-Also write for anonymous/unauthenticated scenarios:
+**For mixed-auth flows** (e.g. F-003 — Authentication): use `test.use()` inside `test.describe()` to set storageState per group:
+
+```typescript
+// qa/tests/F-003-authentication.spec.ts
+import { test } from '@playwright/test';
+import * as F003 from '../flows/F-003-authentication/F-003.scenarios';
+
+test.describe('F-003: Auth — unauthenticated scenarios', () => {
+  // no storageState — test.use() not needed for anonymous group
+  test('S-003-01: Sign in happy path', async ({ page, context }) => {
+    await F003.S_003_01_signIn(page, context);
+  });
+  test('S-003-04: Invalid email rejected', async ({ page, context }) => {
+    await F003.S_003_04_invalidEmail(page, context);
+  });
+});
+
+test.describe('F-003: Auth — session-required scenarios', () => {
+  test.use({ storageState: '.auth/free.json' });  // relative to qa/ (rootDir)
+  test('S-003-14: Session persistence', async ({ page, context }) => {
+    await F003.S_003_14_sessionPersistence(page, context);
+  });
+  test('S-003-16: Sign out', async ({ page, context }) => {
+    await F003.S_003_16_signOut(page, context);
+  });
+});
+```
+
+---
+
+#### Layer 3: Sequential Journey Specs (`qa/journeys/J-NNN-<role>.spec.ts`)
+
+The actual E2E journey — ONE `test()` block per journey. Every scenario call is a `test.step()` for granular step-level pass/fail reporting. The same `page` and `context` flow through the entire journey — browser state carries forward between steps.
+
+Journey scenario selection: include all **P1** scenarios + **P2** scenarios that create state the next flow depends on. Skip P3 (aesthetic/SEO/mobile viewport) — those are covered by standalone tests only.
 
 ```typescript
 // qa/journeys/J-000-anonymous.spec.ts
+// Sequential E2E — anonymous user journey, single browser session
+// Run: npx playwright test journeys/J-000-anonymous.spec.ts
+
 import { test, expect } from '@playwright/test';
-import { AxeBuilder } from '@axe-core/playwright';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as dotenv from 'dotenv';
-dotenv.config({ path: require('path').resolve(__dirname, '../../.env.qa') });
+import * as F001 from '../flows/F-001-marketing-landing/F-001.scenarios';
+import * as F002 from '../flows/F-002-pricing/F-002.scenarios';
+import * as F003 from '../flows/F-003-authentication/F-003.scenarios';
+import * as F004 from '../flows/F-004-tutorials/F-004.scenarios';
+// ... import all flows for this role
 
-const BASELINE_DIR = path.resolve(__dirname, '../../qa/knowledgebase/visual-baselines');
-const BASELINE_PATH = path.join(BASELINE_DIR, 'visual-baseline.png');
+test('J-000: Anonymous user journey — full E2E', async ({ page, context }) => {
 
-// No storageState — unauthenticated tests only
+  // ── F-001: Marketing Landing ──────────────────────────────────
+  await test.step('F-001-S-001-01: Landing page loads', () =>
+    F001.S_001_01_happyPath(page, context));
+  await test.step('F-001-S-001-08: External links have noopener', () =>
+    F001.S_001_08_externalLinkSafety(page, context));
+  await test.step('F-001-S-001-10: Accessibility — axe-core baseline', () =>
+    F001.S_001_10_accessibility(page, context));
 
-test.describe('F-001: Public landing', () => {
-  // public-facing scenarios
+  // ── F-002: Pricing & Plans ────────────────────────────────────
+  await test.step('F-002-S-002-01: Pricing page renders both tiers', () =>
+    F002.S_002_01_happyPath(page, context));
+  await test.step('F-002-S-002-04: Pro ladder updates spec label', () =>
+    F002.S_002_04_ladderSelection(page, context));
+
+  // ── F-003: Authentication (anonymous scenarios only) ──────────
+  await test.step('F-003-S-003-04: Invalid email format rejected', () =>
+    F003.S_003_04_invalidEmail(page, context));
+  await test.step('F-003-S-003-13: /dashboard unauthenticated → signin redirect', () =>
+    F003.S_003_13_authGuard(page, context));
+
+  // ── F-004: Tutorials ─────────────────────────────────────────
+  await test.step('F-004-S-004-01: /tutorial renders wizard outline', () =>
+    F004.S_004_01_happyPath(page, context));
+
+  // ... continue for all flows assigned to this role
+
 });
 ```
 
-**After writing all journey specs**, write the runner infrastructure:
+```typescript
+// qa/journeys/J-001-free.spec.ts
+// Sequential E2E — free-tier authenticated journey
+import { test } from '@playwright/test';
+import * as F003 from '../flows/F-003-authentication/F-003.scenarios';
+import * as F009 from '../flows/F-009-dashboard/F-009.scenarios';
+import * as F012 from '../flows/F-012-unshipped-features/F-012.scenarios';
+
+// storageState applied at file level — all steps in this journey run with free session
+test.use({ storageState: '.auth/free.json' });
+
+test('J-001: Free-tier user journey — full E2E', async ({ page, context }) => {
+
+  // ── F-003: Auth — session-required scenarios ──────────────────
+  await test.step('F-003-S-003-14: Session persists on reload', () =>
+    F003.S_003_14_sessionPersistence(page, context));
+
+  // ── F-009: Authenticated Dashboard ───────────────────────────
+  await test.step('F-009-S-009-01: Dashboard renders for free user', () =>
+    F009.S_009_01_happyPath(page, context));
+  await test.step('F-009-S-009-13: Sidebar — Assistants tab swap', () =>
+    F009.S_009_13_sidebarAssistants(page, context));
+  await test.step('F-009-S-009-14: Sidebar — AI Models tab swap', () =>
+    F009.S_009_14_sidebarAiModels(page, context));
+
+  // ── F-012: Unshipped / Stub Surfaces ──────────────────────────
+  await test.step('F-012-S-012-01: /channels redirects to /tutorial', () =>
+    F012.S_012_01_channelsRedirect(page, context));
+  await test.step('F-012-S-012-03: /agents returns 404', () =>
+    F012.S_012_03_agentsFourOhFour(page, context));
+  await test.step('F-012-S-012-08: 404 Return-to-Dashboard CTA works', () =>
+    F012.S_012_08_returnToDashboard(page, context));
+
+  // Sign out last — confirms auth teardown
+  await test.step('F-003-S-003-16: Sign out clears session', () =>
+    F003.S_003_16_signOut(page, context));
+
+});
+```
+
+Run journey: `npx playwright test journeys/J-001-free.spec.ts`
+
+---
+
+#### Journey Todo File (`qa/journey-todo/J-NNN-<role>.todo.md`)
+
+Create one todo file per journey **at the start of Phase 3**, before writing any code. Update it as each flow is generated. The agent reads this file on resume to find the next pending flow:
+
+```markdown
+# Journey Todo — J-000-anonymous
+# Updated: [YYYY-MM-DD]
+# Purpose: tracks Phase 3 generation progress + Phase 4 runtime execution
+
+## Generation Progress
+
+| Flow | Scenarios.ts Written | Standalone Spec | Added to Journey | Steps Selected |
+|------|---------------------|-----------------|-----------------|----------------|
+| F-001 | ✅ done | ✅ done | ✅ done | 5/13 (P1+P2) |
+| F-002 | ✅ done | ✅ done | ✅ done | 4/11 (P1+P2) |
+| F-003 | ⬜ pending | ⬜ pending | ⬜ pending | — |
+| F-004 | ⬜ pending | ⬜ pending | ⬜ pending | — |
+| F-005 | ⬜ pending | ⬜ pending | ⬜ pending | — |
+| F-006 | ⬜ pending | ⬜ pending | ⬜ pending | — |
+| F-007 | ⬜ pending | ⬜ pending | ⬜ pending | — |
+| F-008 | ⬜ pending | ⬜ pending | ⬜ pending | — |
+| F-010 | ⬜ pending | ⬜ pending | ⬜ pending | — |
+| F-011 | ⬜ pending | ⬜ pending | ⬜ pending | — |
+
+## Journey Step Execution (Phase 4 — updated after run)
+
+| Step | Scenario ID | Function | Status | Error |
+|------|-------------|----------|--------|-------|
+| 1 | S-001-01 | S_001_01_happyPath | ⬜ pending | — |
+| 2 | S-001-08 | S_001_08_externalLinkSafety | ⬜ pending | — |
+| 3 | S-001-10 | S_001_10_accessibility | ⬜ pending | — |
+| 4 | S-002-01 | S_002_01_happyPath | ⬜ pending | — |
+| ... | | | | |
+
+## Notes
+- Journey includes P1 + stateful P2 scenarios only; P3 covered by standalone tests only
+- Steps 1–N populated as each flow is generated in Phase 3
+```
+
+Status values: `⬜ pending` → `⏳ running` → `✅ done` / `❌ failed([reason])`
+
+---
+
+**After all flows written**, write the runner infrastructure:
 
 ```javascript
-// Write qa/run.js
-const runner = `#!/usr/bin/env node
+// qa/run.js
+#!/usr/bin/env node
+// node qa/run.js                          → all tests (standalone + journeys)
+// node qa/run.js --flow F-001             → standalone flow only
+// node qa/run.js --journey J-000          → one E2E journey
+// node qa/run.js --suite standalone       → all qa/tests/ specs
+// node qa/run.js --suite journeys         → all qa/journeys/ specs
+
 const { execSync } = require('child_process');
-const args    = process.argv.slice(2);
-const journey = args[args.indexOf('--journey') + 1];
+const args = process.argv.slice(2);
+const get  = (flag) => { const i = args.indexOf(flag); return i !== -1 ? args[i + 1] : null; };
+
+const flow    = get('--flow');
+const journey = get('--journey');
+const suite   = get('--suite');
 
 console.log('→ Installing dependencies...');
-execSync('npm install --silent',                                                       { stdio: 'inherit', cwd: __dirname });
+execSync('npm install --silent', { stdio: 'inherit', cwd: __dirname });
 execSync('node ./node_modules/playwright/cli.js install chromium --quiet', { stdio: 'inherit', cwd: __dirname });
 
-const grep = journey ? \`--grep "J-\${journey}"\` : '';
-console.log(\`→ Running journeys/ \${grep || '(all)'}\`);
-execSync(
-  \`node ./node_modules/playwright/cli.js test journeys/ \${grep} --config playwright.config.ts --reporter=html --continue-on-failure\`,
-  { stdio: 'inherit', cwd: __dirname }
-);
-`;
-require('fs').writeFileSync(require('path').join(__dirname, '../qa/run.js'), runner);
+let target = '';
+if (flow)                       target = `tests/${flow}-*.spec.ts`;
+else if (journey)               target = `journeys/${journey}-*.spec.ts`;
+else if (suite === 'standalone') target = 'tests/';
+else if (suite === 'journeys')   target = 'journeys/';
+// else: testMatch in playwright.config.ts picks up both tests/ and journeys/
+
+const cmd = [
+  'node ./node_modules/playwright/cli.js test',
+  '--config playwright.config.ts',
+  '--reporter=html --continue-on-failure',
+  target,
+].filter(Boolean).join(' ');
+
+console.log(`→ Running: ${cmd}`);
+execSync(cmd, { stdio: 'inherit', cwd: __dirname });
 ```
 
 ```json
-// Write qa/package.json
+// qa/package.json
 {
   "name": "qa-suite",
   "private": true,
   "scripts": {
     "test": "node run.js",
+    "test:standalone": "node run.js --suite standalone",
+    "test:journeys": "node run.js --suite journeys",
+    "test:flow": "node run.js --flow",
     "test:journey": "node run.js --journey"
   },
   "dependencies": { "@playwright/test": "^1.44.0", "dotenv": "^16.0.0" }
@@ -843,46 +1059,59 @@ require('fs').writeFileSync(require('path').join(__dirname, '../qa/run.js'), run
 
 Also copy `.env.example` to `qa/.env.example` if it doesn't already exist.
 
-**Phase boundary checkpoint** — write full `qa/state.md`. Log: `"Phase 3 complete — [N] journey specs written to qa/journeys/, [N] total test cases."`
+**Phase boundary checkpoint** — write full `qa/state.md`. Log: `"Phase 3 complete — [N] scenario modules, [N] standalone specs, [N] journey specs."`
 
 Announce to user:
-> "✅ Shippable test suite ready in `qa/journeys/` — [N] journey files, [N] test cases.
-> **To run**: `node qa/run.js`
-> **To share**: `zip -r qa-suite.zip qa/journeys/ qa/run.js qa/package.json qa/playwright.config.ts`"
+> "✅ Shippable test suite ready:
+> - `qa/tests/` — [N] standalone flow specs (run any flow independently)
+> - `qa/journeys/` — [N] sequential E2E journeys (shared browser session)
+>
+> **Run standalone flow**: `node qa/run.js --flow F-001`
+> **Run journey**: `node qa/run.js --journey J-000`
+> **Run all**: `node qa/run.js`
+> **To share**: `zip -r qa-suite.zip qa/flows/ qa/tests/ qa/journeys/ qa/journey-todo/ qa/run.js qa/package.json qa/playwright.config.ts`"
 
 ---
 
 ## Phase 4: Test Execution & Reporting
 
-**Goal**: Run the shippable journey suite from `qa/journeys/` and generate the final report.
-**Input**: `qa/journeys/J-NNN-*.spec.ts` written in Phase 3.
-**Output**: Pass/fail results per journey + unified HTML report.
+**Goal**: Run the test suite and generate the final report.
+**Input**: `qa/tests/F-NNN-*.spec.ts` (standalone) + `qa/journeys/J-NNN-*.spec.ts` (E2E journeys) written in Phase 3.
+**Output**: Pass/fail results per flow/journey + unified HTML report.
 **No test writing in this phase** — Phase 4 is execution only.
 
 ---
 
-### Step W-11: Journey Execution with Run-State Tracking
+### Step W-11: Execution with Run-State Tracking
 
-Write `qa/run-state.md` before running (the run todo — ≤30 lines total):
+Before running, update the execution status section in each `qa/journey-todo/J-NNN.todo.md` — mark all steps `⬜ pending`. This is the runtime tracking record.
+
+Write `qa/run-state.md` (the high-level run overview — ≤30 lines):
 
 ```markdown
 # Run State — [AppName] [YYYY-MM-DD HH:MM]
 > Resume: re-trigger `/native-qa` → option 1, or `node qa/run.js`
 
-| Journey | Role | Tests | Status | Failure |
-|---------|------|-------|--------|---------|
-| J-000 | anonymous | [N] | ⬜ pending | — |
-| J-001 | member | [N] | ⬜ pending | — |
-| J-002 | admin | [N] | ⬜ pending | — |
+| Suite | Type | Tests | Status | Failure |
+|-------|------|-------|--------|---------|
+| J-000-anonymous | E2E journey | [N] | ⬜ pending | — |
+| J-001-free | E2E journey | [N] | ⬜ pending | — |
+| F-001-standalone | Standalone | [N] | ⬜ pending | — |
 ```
 
 Then for each journey row, in order:
-1. Update row status → `⏳ running`
+1. Update row status → `⏳ running`; mark steps `⏳ running` in journey-todo
 2. `cd qa && node ./node_modules/playwright/cli.js test journeys/J-NNN-*.spec.ts --config playwright.config.ts --reporter=line --continue-on-failure`
-3. Parse exit code + first failure line from stdout
-4. Update row → `✅ done` or `❌ failed([test name]: [first-failure-text])`
+3. Parse exit code + first failure step from stdout
+4. Update row → `✅ done` or `❌ failed([step name]: [first-failure-text])`
+5. Update journey-todo step statuses to `✅ done` or `❌ failed(...)` based on output
 
-**Resume from partial failure**: on re-trigger, read `qa/run-state.md`, skip `✅ done` rows, continue from first non-done row. No re-running passing journeys.
+**Resume from partial failure**: on re-trigger, read `qa/run-state.md`, skip `✅ done` rows, continue from first non-done row.
+
+After all journey rows terminal, run standalone suite:
+```bash
+cd qa && node ./node_modules/playwright/cli.js test tests/ --config playwright.config.ts --reporter=line --continue-on-failure
+```
 
 After all rows terminal:
 - Generate report: `node scripts/allure/generate-report.js --open`
@@ -896,12 +1125,12 @@ After all rows terminal:
 node scripts/allure/generate-report.js --open
 ```
 
-Tell the user: `"✅ All 4 phases complete. [N] flows, [N] scenarios, [N] TCs, [N] passed / [N] failed. Report opened."`
+Tell the user: `"✅ All 4 phases complete. [N] flows, [N] scenarios, [N] passed / [N] failed. Report opened."`
 
 **To share the test suite:**
 ```bash
-zip -r qa-suite.zip qa/journeys/ qa/run.js qa/package.json qa/playwright.config.ts \
-  qa/.env.example
+zip -r qa-suite.zip qa/flows/**/F-NNN.scenarios.ts qa/tests/ qa/journeys/ qa/journey-todo/ \
+  qa/run.js qa/package.json qa/playwright.config.ts qa/.env.example
 ```
 Recipient: `unzip qa-suite.zip && cp .env.example .env.qa` (fill URL + creds) → `node run.js`
 
@@ -909,7 +1138,7 @@ Recipient: `unzip qa-suite.zip && cp .env.example .env.qa` (fill URL + creds) �
 
 ### Step W-13: Update Mode
 
-Triggered when `HAS_WORKSPACE` is detected (journey specs already exist in `qa/journeys/`). The workspace has completed at least one full run. The goal is to **incrementally update** — not redo everything from scratch.
+Triggered when `HAS_WORKSPACE` is detected (scenario modules or spec files already exist). The workspace has completed at least one full run. The goal is to **incrementally update** — not redo everything from scratch.
 
 #### W-13.1: Read Current State
 
@@ -917,6 +1146,7 @@ Triggered when `HAS_WORKSPACE` is detected (journey specs already exist in `qa/j
 cat qa/state.md
 cat qa/.qa-config.json
 ls qa/flows/*/flow.md 2>/dev/null | wc -l
+ls qa/tests/*.spec.ts 2>/dev/null | wc -l
 ls qa/journeys/*.spec.ts 2>/dev/null | wc -l
 ```
 
@@ -926,28 +1156,28 @@ Present to user:
 > | Field | Value |
 > |-------|-------|
 > | Flows | [N] |
-> | Scenarios | [N] |
+> | Standalone specs | [N] in qa/tests/ |
 > | Journey specs | [N] in qa/journeys/ |
 > | Last run | [date from state.md] |
 >
 > What would you like to do?
 >
-> **1) Re-discover** — re-crawl the app, find new pages/flows, regenerate affected journey specs
-> **2) Add flows** — add specific new flows without re-crawling, append to relevant journey specs
-> **3) Re-run tests** — re-execute existing journey specs and generate fresh report
-> **4) Full refresh** — delete all flows, snapshots and journey specs, start Phase 1 from scratch"
+> **1) Re-discover** — re-crawl the app, find new pages/flows, regenerate affected scenario modules + specs
+> **2) Add flows** — add specific new flows without re-crawling, write new scenario modules and append to relevant journeys
+> **3) Re-run tests** — re-execute existing specs and generate fresh report
+> **4) Full refresh** — delete all flows, snapshots, scenario modules and specs, start Phase 1 from scratch"
 
 Wait for user's choice.
 
 #### W-13.2: Route Based on Choice
 
-- **"1" / "re-discover"** → Delete `qa/crawl-state.json` (force fresh crawl), then run Step W-2 (BFS crawl) again using DOM/ARIA snapshots. Compare new page inventory with existing `ui-inventory.md`. For new pages not in any existing flow → create new flow directories. For existing flows → keep flow.md/scenarios.md as-is unless pages are gone (mark stale). Regenerate `qa/journeys/` specs for changed flows only.
+- **"1" / "re-discover"** → Delete `qa/crawl-state.json` (force fresh crawl), then run Step W-2 (BFS crawl). Compare new page inventory with existing `ui-inventory.md`. For new pages not in any existing flow → create new flow directories. For changed flows → regenerate `F-NNN.scenarios.ts`, the standalone `qa/tests/F-NNN-*.spec.ts`, and update `test.step()` calls in the relevant `qa/journeys/J-NNN-<role>.spec.ts`. Unchanged flows untouched.
 
-- **"2" / "add flows"** → Ask user which flows to add. Create new `F-NNN-*` directories. Run Phase 1 trace (DOM/ARIA snapshots) → Phase 2 scenarios → append new `test.describe` blocks to the relevant `qa/journeys/J-NNN-<role>.spec.ts`. Existing journey specs untouched for unchanged flows.
+- **"2" / "add flows"** → Ask user which flows to add. Create new `F-NNN-*` directories. Run Phase 1 trace (DOM/ARIA snapshots) → Phase 2 scenarios → write `F-NNN.scenarios.ts` → write `qa/tests/F-NNN-<slug>.spec.ts` → append `import` + `test.step()` blocks to the relevant `qa/journeys/J-NNN-<role>.spec.ts`. Add new rows to the relevant `qa/journey-todo/J-NNN.todo.md`. Existing specs untouched for unchanged flows.
 
-- **"3" / "re-run"** → Jump directly to Step W-11 (run journey specs). Skip all discovery and generation.
+- **"3" / "re-run"** → Jump directly to Step W-11. Skip all discovery and generation.
 
-- **"4" / "full refresh"** → Delete `qa/flows/`, `qa/knowledgebase/`, `qa/journeys/`, `qa/state.md`, `qa/crawl-state.json`. Keep `qa/.qa-config.json` and `qa/context/`. Then jump to Step W-2 (BFS crawl) — full Phase 1 restart with existing config.
+- **"4" / "full refresh"** → Delete `qa/flows/` (docs + scenario modules), `qa/knowledgebase/`, `qa/tests/`, `qa/journeys/`, `qa/journey-todo/`, `qa/state.md`, `qa/crawl-state.json`. Keep `qa/.qa-config.json` and `qa/context/`. Then jump to Step W-2 — full Phase 1 restart with existing config.
 
 ---
 
@@ -966,7 +1196,7 @@ Wait for user's choice.
 8. **Relative URLs only** in test files — `'/'` not `'https://app.example.com/'`
 9. **Scope nav selectors** to `page.locator('nav, header').first()` — avoid footer duplicates
 10. **Never click destructive buttons** during BFS discovery — use the safe whitelist (W-2.5)
-11. **No duplicate test locations** — journey specs live only in `qa/journeys/`. Do not also write `TC-*.md` files or `specs/` files. One location, one truth.
+11. **No duplicate test code** — scenario logic lives only in `qa/flows/F-NNN-*/F-NNN.scenarios.ts`. Standalone wrappers (`qa/tests/`) and journey specs (`qa/journeys/`) import and call those functions — they do NOT copy test code. No `TC-*.md` files anywhere.
 
 ### Performance
 
