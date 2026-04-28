@@ -377,7 +377,13 @@ For each confirmed role, in order:
 1. Look up `QA_<ROLE>_EMAIL` / `QA_<ROLE>_PASSWORD` in `.env.qa` (e.g. `QA_ADMIN_EMAIL`).
 2. If present → confirm: *"Use the existing admin creds for the Admin role?"*
 3. If absent → `AskUserQuestion` with options: (a) provide creds now, append to `.env.qa`; (b) self-register via UI if app supports it; (c) skip this role's flows for this run.
-4. After successful login (via `qa/scripts/login-engage.js` — see `skills/web/helpers/login-engage.md`), save `storageState` to `qa/.auth/<role>.json`. Add `QA_<ROLE>_STORAGE_STATE=qa/.auth/<role>.json` to `.env.qa`.
+4. After successful auth, save `storageState` to `qa/.auth/<role>.json`. Add `QA_<ROLE>_STORAGE_STATE=qa/.auth/<role>.json` to `.env.qa`.
+   **Auth strategy for `auth-crawl.js`**: always try **signup first**, then fall back to login if the account already exists:
+   - Navigate to the app's signup page (discovered in Phase 1 nav-graph) → fill email + password + confirm-password → submit
+   - If result is `auth-success` → save storageState ✓
+   - If result is `user-already-exists` / `auth-rejected-server` / `error-surfaced` → fall back to the app's signin page → fill email + password → submit
+   - Classify outcomes via `armAuthWatcher` (arm `waitForResponse` for auth POSTs **before** clicking submit) — never rely on URL change alone
+   - `auth-crawl.js` must be run from the **repo root** — `dotenv` resolves `.env.qa` relative to `process.cwd()`, not `__dirname`. The script should walk up from `__dirname` to find `.env.qa` automatically.
 
 #### 5. Only then proceed to W-3
 
@@ -728,6 +734,15 @@ Never write multiple flows in one context window if the previous flow had >25 fu
 5. **Semantic locators preferred** — `getByRole` > `getByLabel` > `getByTestId` > CSS. CSS only with a comment.
 6. **No bare `waitForTimeout`** — replace with `waitForSelector`, `waitForResponse`, `waitForURL`, or `waitForFunction`.
 7. **storageState set at describe level or via journey config** — never re-login inside a function that expects a cached session.
+8. **Prefer `toHaveURL` over `waitForURL` for post-click navigation checks** — `waitForURL(pattern, opts)` waits for a future navigation event. If the SPA navigation completes synchronously during the click, `waitForURL` is called after the URL has already changed and waits forever for a second navigation. `toHaveURL(pattern, { timeout: N })` polls the current URL repeatedly and works whether the navigation was fast or slow. Use `toHaveURL` for all post-click URL assertions. Exception: use `waitForURL` only when you need to explicitly wait for a navigation that has NOT started yet.
+8b. **`exact: true` on all `getByRole` name locators** — Playwright partial-matches by default, causing strict mode errors when a shorter name is a prefix of a longer one (e.g. "Sign up" matches "Sign up for Free"; "$5" matches "$50"; "$10" matches "$10 off"). Always pass `{ exact: true }` unless the regex variant `{ name: /pattern/ }` is used. This applies to every string name — buttons, links, headings, roles.
+9. **URL assertions use regex; never assert query params or wait for URL changes on SPA form toggles** — `toHaveURL('/')` is fragile. Always use regex: `toHaveURL(/\/path/)`. Additionally: (a) do NOT assert SPA query params (e.g. `?mode=signin`, `?tab=terms`) that client-side routers silently strip or never set; (b) do NOT use `waitForURL(/param=value/)` when a form-mode toggle works via JS state — the URL may never change. Assert *form state* instead — look for a field that is only visible in one mode (e.g. a "Confirm password" field that disappears when switching from signup to signin). Read the ARIA snapshot to identify the unique field for each mode. This is the only reliable indicator when the SPA manages form mode via client-side state rather than URL.
+10. **axe-core violations are warnings, not failures** — real apps have a11y issues that shouldn't block CI. Use `console.warn()` for violations; only `throw` if the test infrastructure itself failed (e.g. axe could not run). Filter to `impact === 'critical' || impact === 'serious'` and log them.
+11. **Auth-required scenarios add an `assertAuthenticated` guard** — at the start of every function that navigates to a protected route, check that the URL is NOT `/account`. If redirected to login, throw a clear error: `[AUTH REQUIRED] Redirected to /account — storageState expired. Refresh with: node qa/scripts/auth-crawl.js`
+12. **Use `inputValue()` not `textContent()` for form elements** — `textContent()` always returns `""` on `<select>`, `<input>`, and `<textarea>` elements. Use `inputValue()` to read their current value. For inputs that update based on button clicks, wrap in a helper: `const v = await el.inputValue().catch(() => null) ?? await el.textContent()`. Only assert that values differ if both are non-empty — empty means the element type doesn't support the call. **Always check which element ACTUALLY changes**: a page may have multiple comboboxes/textboxes — use the ARIA snapshot to identify which role (`textbox` vs `combobox`) the target field has before writing the locator. Example: a pricing page with a Pro plan spec `combobox` AND a price-amount `textbox` — `getByRole('combobox').first()` picks the spec dropdown, not the amount field.
+14. **API-call monitors exclude analytics hosts** — when a test asserts "no API calls fired", filter with an `ANALYTICS_HOSTS` regex that covers Google Analytics, Supabase track-event, GTM, Segment, Mixpanel, Amplitude, Hotjar, Intercom, Sentry, Clarity, Facebook, Twitter, TikTok, Reddit. Only flag genuine product API POSTs. Never assert `toHaveLength(0)` on an unfiltered request list — analytics fire on every navigation.
+15. **Post-onboarding UI may need a `dismissWizardIfPresent()` helper** — any scenario that clicks post-login UI on a fresh account may encounter a full-screen onboarding wizard (e.g. `fixed inset-0 z-[2147483647]`, blocks ALL pointer events) before the main UI is reachable. Pattern: detect each wizard step by its unique visible marker (a heading, a specific button, a unique string); loop until no markers are visible; use `{ force: true }` on ALL clicks inside the overlay. Some "Continue" buttons are DISABLED until required input is completed (e.g. selecting a persona or picking items from a dropdown) — always check `isEnabled()` before clicking, and handle the selection sequence that enables it. Once dismissed these are usually server-side persistent (no re-show on page reload). Write this as a shared function at the top of any `F-NNN.scenarios.ts` that needs it; adapt step markers to the observed app. Copy the canonical pattern from the Layer 1 template in this SKILL.md.
+16. **Stateful buttons change their label after interaction — always assert the NEW label for the second action** — any button that toggles state (show/hide password, expand/collapse, play/pause, mode switch) has a different `name` after each click. Never click the same `name` twice to toggle back. Example: `button "Show password"` becomes `button "Hide password"` after click — the second click must use `getByRole('button', { name: 'Hide password', exact: true })`. Similarly, mode-toggle buttons (e.g. switching between signup/signin) may change their label after clicking — always read the ARIA snapshot to know the label in each state before writing the second action, never guess it.
 
 **Standards:**
 - `waitUntil: 'domcontentloaded'` (never `networkidle` on SPAs)
@@ -735,6 +750,7 @@ Never write multiple flows in one context window if the previous flow had >25 fu
 - `baseURL` from `QA_APP_URL` via `qa/playwright.config.ts`
 - Credentials always from `process.env.QA_TEST_EMAIL` — never hardcoded
 - Locators derived from DOM/ARIA snapshots — use `aria-label`, `role`, `name`, `placeholder` values from `.snapshot.json` files
+- `auth-crawl.js` must be run from the **repo root** (not from `qa/`), because `dotenv` loads `.env.qa` from the current working directory
 
 ---
 
@@ -743,12 +759,12 @@ Never write multiple flows in one context window if the previous flow had >25 fu
 Each scenario from `scenarios.md` becomes an exported async function that receives `page` and `context` from the caller. Functions are plain async — no Playwright fixtures, no imports from `@playwright/test` fixture types beyond `Page` and `BrowserContext`:
 
 ```typescript
-// qa/flows/F-001-marketing-landing/F-001.scenarios.ts
+// qa/flows/F-NNN-<slug>/F-NNN.scenarios.ts
 // Callable from standalone tests (qa/tests/) OR journey specs (qa/journeys/)
-// Standalone: npx playwright test tests/F-001-marketing-landing.spec.ts
-// Journey:    npx playwright test journeys/J-000-anonymous.spec.ts
+// Standalone: node qa/run.js --flow F-NNN
+// Journey:    node qa/run.js --journey J-000
 //
-// Entry state: any (functions navigate as needed)
+// Entry state: any (functions navigate as needed via page.goto)
 // Exit state:  documented per function in JSDoc
 
 import { Page, BrowserContext, expect } from '@playwright/test';
@@ -756,45 +772,213 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 dotenv.config({ path: path.resolve(__dirname, '../../../.env.qa') });
 
+// ─── SHARED HELPERS (copy into any scenarios.ts that needs them) ──────────────
+
+/** Excludes analytics/tracking POSTs from API-call monitors — prevents false positives */
+const ANALYTICS_HOSTS = /google\.|googleapis\.|doubleclick\.|segment\.|mixpanel\.|amplitude\.|analytics\.|hotjar\.|intercom\.|sentry\.|clarity\.|supabase\.co\/functions\/v1\/track|facebook\.|twitter\.|tiktok\.|reddit\./i;
+
 /**
- * S-001-01: Happy Path — home loads with hero + CTAs
- * Entry: any URL  |  Exit: page is at '/'
+ * Auth guard — call at the start of every auth-required function.
+ * Throws a clear error if the page redirected to login instead of loading the protected route.
  */
-export async function S_001_01_happyPath(page: Page, _ctx: BrowserContext): Promise<void> {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByRole('heading', { name: /Say hello/i })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Sign up' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Log in' })).toBeVisible();
+async function assertAuthenticated(page: Page): Promise<void> {
+  if (page.url().includes('/account')) {
+    throw new Error(
+      '[AUTH REQUIRED] Redirected to /account — storageState is missing or expired.\n' +
+      'Refresh: node qa/scripts/auth-crawl.js  (run from repo root, not from qa/)'
+    );
+  }
 }
 
 /**
- * S-001-02: CTA — "Sign up" routes to /account (signup mode)
- * Entry: page is at '/'  |  Exit: page is at '/account'
+ * Dismiss ALL onboarding/wizard overlays before testing post-setup UI.
+ *
+ * Pattern: Apps may show a full-screen onboarding wizard on fresh accounts
+ * (e.g., fixed inset-0 z-[2147483647], blocks ALL pointer events).
+ * Use { force: true } on ALL clicks inside fixed-position overlays.
+ * Some "Continue" buttons are DISABLED until required selections are made
+ * (e.g., selecting a persona or picking items from a dropdown).
+ *
+ * ⚠ Adapt the marker strings below to your app's actual wizard UI.
+ *   Read the ARIA snapshot of the post-login page to identify each step's
+ *   unique visible element (heading text, button label, or unique string).
+ *   Replace '[STEP_N_MARKER]' placeholders with the real text observed.
+ *
+ * Copy this into any F-NNN.scenarios.ts that tests post-wizard dashboard UI.
+ */
+async function dismissWizardIfPresent(page: Page): Promise<void> {
+  const continueBtn = page.getByRole('button', { name: 'Continue', exact: true });
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    // ── Step N: [e.g. "Choose a Plan"] ──────────────────────────────────────
+    // Marker: the unique button that identifies this step
+    // const stepNBtn = page.getByRole('button', { name: '[STEP_N_BUTTON]', exact: true });
+    // if (await stepNBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
+    //   await stepNBtn.click({ force: true });
+    //   await page.waitForTimeout(1200);
+    //   continue;
+    // }
+
+    // ── Step N+1: [e.g. "Setup — persona + task selection required"] ─────────
+    // Marker: unique heading or text only visible on this step
+    // const stepN1Heading = page.getByText('[UNIQUE_HEADING_TEXT]');
+    // if (await stepN1Heading.isVisible({ timeout: 1000 }).catch(() => false)) {
+    //   // 1. Click persona/category selector (idempotent)
+    //   await page.getByRole('button', { name: '[PERSONA_BUTTON]', exact: true }).click({ force: true }).catch(() => {});
+    //   await page.waitForTimeout(600);
+    //   // 2. If a dropdown selection is required to enable Continue:
+    //   const tasksDropdown = page.getByText(/Select .*/i).first();
+    //   if (await tasksDropdown.isVisible({ timeout: 1500 }).catch(() => false)) {
+    //     await tasksDropdown.click({ force: true }).catch(() => {});
+    //     await page.waitForTimeout(500);
+    //     const firstOption = page.locator('[role="option"]').first();
+    //     if (await firstOption.isVisible({ timeout: 2000 }).catch(() => false)) {
+    //       await firstOption.click({ force: true }).catch(() => {});
+    //     }
+    //     await page.keyboard.press('Escape').catch(() => {});
+    //     await page.waitForTimeout(400);
+    //   }
+    //   // 3. Click Continue (may require waiting for it to become enabled)
+    //   if (await continueBtn.isEnabled({ timeout: 4000 }).catch(() => false)) {
+    //     await continueBtn.click({ force: true });
+    //   } else {
+    //     await continueBtn.click({ force: true }).catch(() => {});
+    //   }
+    //   await page.waitForTimeout(1500);
+    //   continue;
+    // }
+
+    // ── Final step: dismiss/skip button ──────────────────────────────────────
+    const dismissBtn = page.getByRole('button', { name: /set up later|skip|dismiss|close/i });
+    if (await dismissBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await dismissBtn.click({ force: true });
+      await page.waitForTimeout(1000);
+      break;
+    }
+
+    break; // No wizard markers visible — exit loop
+  }
+}
+
+// ─── SCENARIO FUNCTIONS ───────────────────────────────────────────────────────
+// Naming convention: S_NNN_NN_camelCaseDescription  (matches scenario ID from scenarios.md)
+// Locator values (heading text, button labels, placeholder text) come from the
+// app's ARIA snapshots in qa/knowledgebase/aria-snapshots/ — never guess them.
+
+/**
+ * S-001-01: Happy Path — home page loads with expected heading and CTAs
+ * Entry: any URL  |  Exit: page is at '/'
+ *
+ * ⚠ Adapt heading text and button labels to what the ARIA snapshot shows.
+ */
+export async function S_001_01_happyPath(page: Page, _ctx: BrowserContext): Promise<void> {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  // Use text from qa/knowledgebase/aria-snapshots/home.snapshot.json → dom.headings[0]
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  // exact: true prevents partial match — 'Sign up' would also match 'Sign up for Free'
+  await expect(page.getByRole('link', { name: /sign up|get started|register/i }).first()).toBeVisible();
+}
+
+/**
+ * S-001-02: CTA — primary sign-up CTA navigates to the registration page
+ * Entry: page is at '/'  |  Exit: page is at the signup/registration URL
+ *
+ * ⚠ Adapt the button/link name and the expected URL regex to match the app.
  */
 export async function S_001_02_ctaSignUp(page: Page, _ctx: BrowserContext): Promise<void> {
-  await page.getByRole('link', { name: 'Sign up' }).click();
-  await page.waitForURL(/\/account/, { timeout: 10000 });
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  // Use exact label from ARIA snapshot; exact: true avoids partial-match strict errors
+  await page.getByRole('link', { name: /sign up|get started|register/i }).first().click();
+  // Use regex — never assert an exact URL path (SPA may add hash, trailing slash, etc.)
+  await page.waitForURL(/\/(signup|register|account|join)/, { timeout: 10000 });
   await expect(page.getByRole('textbox', { name: /email/i })).toBeVisible();
 }
 
 /**
- * S-001-06: Negative — demo widget "Type a message…" must not submit
- * Entry: any  |  Exit: page is at '/', no navigation occurred
+ * S-001-06: Negative — interactive demo/widget must not fire real API calls without auth
+ * Entry: any  |  Exit: page at '/' or auth redirect (both acceptable)
+ *
+ * NOTE: Only flag POST requests to non-analytics endpoints (see ANALYTICS_HOSTS filter).
+ *       The app may redirect unauthenticated users to login — that is NOT a failure.
+ *
+ * ⚠ Adapt the placeholder selector to the actual demo input observed in the snapshot.
  */
 export async function S_001_06_demoWidgetNoSubmit(page: Page, _ctx: BrowserContext): Promise<void> {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  const requests: string[] = [];
-  page.on('request', r => requests.push(r.url()));
-  await page.getByPlaceholder(/type a message/i).fill('hello');
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(500);
-  const postsFired = requests.filter(u => u.includes('/api') || u.includes('/chat'));
-  await expect(page).toHaveURL('/');
-  if (postsFired.length > 0) throw new Error(`Unexpected API call from demo widget: ${postsFired[0]}`);
+  const apiCalls: string[] = [];
+  // Exclude analytics/tracking — only capture real product API calls
+  page.on('request', r => {
+    if (r.method() === 'POST' && !ANALYTICS_HOSTS.test(r.url())) {
+      apiCalls.push(`${r.method()} ${r.url()}`);
+    }
+  });
+  // Interact with demo input — use placeholder text from ARIA snapshot
+  const demoInput = page.getByPlaceholder(/try|demo|type a message/i).first();
+  if (await demoInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await demoInput.fill('hello');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(500);
+  }
+  expect(apiCalls, `Unexpected API calls from demo widget: ${apiCalls.join(', ')}`).toHaveLength(0);
+}
+
+/**
+ * S-001-10: Accessibility — axe-core baseline scan (warn only, never fail CI)
+ * Entry: any  |  Exit: page at '/', axe scan logged
+ *
+ * RULE: axe violations are app defects tracked separately — they must not block CI.
+ *       Always console.warn, never throw. Only critical/serious impact reported.
+ */
+export async function S_001_10_accessibility(page: Page, _ctx: BrowserContext): Promise<void> {
+  const { AxeBuilder } = await import('@axe-core/playwright').catch(() => ({ AxeBuilder: null as any }));
+  if (!AxeBuilder) { console.warn('[axe] @axe-core/playwright not installed — skipping'); return; }
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  const results = await new AxeBuilder({ page }).analyze();
+  const serious = results.violations.filter((v: { impact?: string }) =>
+    v.impact === 'critical' || v.impact === 'serious'
+  );
+  if (serious.length > 0) {
+    console.warn(`[axe] ${serious.length} violation(s) on /:\n` +
+      serious.map((v: { id: string; description: string }) => `  ${v.id}: ${v.description}`).join('\n'));
+  }
+}
+
+/**
+ * S-NNN-01: Happy Path — main authenticated page renders correctly
+ * Entry: authenticated session loaded via storageState  |  Exit: page at app's main route
+ *
+ * ⚠ Adapt route and heading assertions to what the ARIA snapshot shows.
+ * Requires: test.use({ storageState: '.auth/user.json' }) in the spec wrapper.
+ */
+export async function S_NNN_01_happyPath(page: Page, _ctx: BrowserContext): Promise<void> {
+  // Use the app's authenticated entry point — discovered in Phase 1 nav-graph
+  await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+  await assertAuthenticated(page);
+  // Use heading text from ARIA snapshot: dom.headings[0].text
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+}
+
+/**
+ * S-NNN-13: Post-wizard sidebar tab — primary nav tab swaps panel
+ * Entry: authenticated session  |  Exit: authenticated route, primary panel visible
+ *
+ * Calls dismissWizardIfPresent() first — fresh accounts may have an onboarding wizard
+ * that overlays the main UI until dismissed.
+ *
+ * ⚠ Adapt the tab button name and panel heading to what the ARIA snapshot shows.
+ */
+export async function S_NNN_13_sidebarTab(page: Page, _ctx: BrowserContext): Promise<void> {
+  await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+  await assertAuthenticated(page);
+  await dismissWizardIfPresent(page); // wizard may overlay sidebar on fresh accounts
+  // Tab button name from ARIA snapshot: dom.buttons[N].name
+  await page.getByRole('button', { name: '[TAB_NAME]', exact: true }).click();
+  await expect(page).toHaveURL(/\/dashboard/);
+  // Verify panel loaded — heading or empty-state text from ARIA snapshot
+  await expect(page.getByRole('heading', { name: /[panel heading]/i })).toBeVisible({ timeout: 5000 });
 }
 
 // ... one exported function per scenario in scenarios.md
-// Naming: S_NNN_NN_camelCaseDescription — matches scenario ID exactly
 ```
 
 **Rules for scenario functions:**
@@ -914,37 +1098,30 @@ test('J-000: Anonymous user journey — full E2E', async ({ page, context }) => 
 ```
 
 ```typescript
-// qa/journeys/J-001-free.spec.ts
-// Sequential E2E — free-tier authenticated journey
+// qa/journeys/J-001-member.spec.ts
+// Sequential E2E — authenticated member journey
+// ⚠ Adapt imports and step list to the actual flows discovered for this role.
 import { test } from '@playwright/test';
 import * as F003 from '../flows/F-003-authentication/F-003.scenarios';
 import * as F009 from '../flows/F-009-dashboard/F-009.scenarios';
-import * as F012 from '../flows/F-012-unshipped-features/F-012.scenarios';
+// ... import other flows for this role
 
-// storageState applied at file level — all steps in this journey run with free session
-test.use({ storageState: '.auth/free.json' });
+// storageState applied at file level — all steps in this journey run with member session
+test.use({ storageState: '.auth/member.json' });
 
-test('J-001: Free-tier user journey — full E2E', async ({ page, context }) => {
+test('J-001: Member user journey — full E2E', async ({ page, context }) => {
 
   // ── F-003: Auth — session-required scenarios ──────────────────
   await test.step('F-003-S-003-14: Session persists on reload', () =>
     F003.S_003_14_sessionPersistence(page, context));
 
-  // ── F-009: Authenticated Dashboard ───────────────────────────
-  await test.step('F-009-S-009-01: Dashboard renders for free user', () =>
+  // ── F-009: Authenticated dashboard ───────────────────────────
+  await test.step('F-009-S-009-01: Dashboard renders for member', () =>
     F009.S_009_01_happyPath(page, context));
-  await test.step('F-009-S-009-13: Sidebar — Assistants tab swap', () =>
-    F009.S_009_13_sidebarAssistants(page, context));
-  await test.step('F-009-S-009-14: Sidebar — AI Models tab swap', () =>
-    F009.S_009_14_sidebarAiModels(page, context));
+  await test.step('F-009-S-009-13: Primary nav tab swaps panel', () =>
+    F009.S_009_13_sidebarTab(page, context));
 
-  // ── F-012: Unshipped / Stub Surfaces ──────────────────────────
-  await test.step('F-012-S-012-01: /channels redirects to /tutorial', () =>
-    F012.S_012_01_channelsRedirect(page, context));
-  await test.step('F-012-S-012-03: /agents returns 404', () =>
-    F012.S_012_03_agentsFourOhFour(page, context));
-  await test.step('F-012-S-012-08: 404 Return-to-Dashboard CTA works', () =>
-    F012.S_012_08_returnToDashboard(page, context));
+  // ... add steps for other flows in this journey
 
   // Sign out last — confirms auth teardown
   await test.step('F-003-S-003-16: Sign out clears session', () =>

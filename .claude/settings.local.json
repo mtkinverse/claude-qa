@@ -25,7 +25,15 @@
       "Read(//home/taha/.cache/ms-playwright/**)",
       "Bash(/home/taha/Desktop/claude-mac-qa-skills/qa/node_modules/.bin/playwright test *)",
       "Bash(chmod +x /home/taha/Desktop/claude-mac-qa-skills/qa/node_modules/.bin/playwright)",
-      "Bash(chmod +x /home/taha/Desktop/claude-mac-qa-skills/qa/node_modules/.bin/playwright-chromium)"
+      "Bash(chmod +x /home/taha/Desktop/claude-mac-qa-skills/qa/node_modules/.bin/playwright-chromium)",
+      "Bash(npm install *)",
+      "Bash(node_modules/.bin/playwright install *)",
+      "Bash(node_modules/.bin/playwright test *)",
+      "Bash(grep -n \"getByRole.*button.*'\\\\\\\\\\\\$\" /home/taha/Desktop/claude-mac-qa-skills/qa/flows/F-002-pricing/F-002.scenarios.ts)",
+      "Bash(curl -sI https://www.paio.bot/ --max-time 10)",
+      "Bash(curl -sI https://paioclaw.ai/ --max-time 10)",
+      "Bash(sed -i \"s/getByRole\\('button', { name: 'Sign in' }\\)/getByRole\\('button', { name: 'Sign in', exact: true }\\).last\\(\\)/g\" /home/taha/Desktop/claude-mac-qa-skills/qa/flows/F-003-authentication/F-003.scenarios.ts)",
+      "Bash(sed -i \"s/getByRole\\('button', { name: 'Sign up' }\\)/getByRole\\('button', { name: 'Sign up', exact: true }\\).last\\(\\)/g\" /home/taha/Desktop/claude-mac-qa-skills/qa/flows/F-003-authentication/F-003.scenarios.ts)"
     ]
   }
 }
