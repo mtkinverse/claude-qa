@@ -1,0 +1,20 @@
+[
+  {
+    "id": "S-001-01",
+    "role": "anonymous",
+    "preconditions": ["app:reachable"],
+    "postconditions": ["app:reachable", "route:/", "auth:signed-out"],
+    "file": "flows/F-001-home/F-001.scenarios.ts",
+    "mutations": ["wrong-url"],
+    "invoke": { "fn": "S_001_01_happyPath", "spec": "tests/F-001-home.spec.ts" }
+  },
+  {
+    "id": "S-001-02",
+    "role": "free",
+    "preconditions": ["app:reachable", "auth:signed-in"],
+    "postconditions": ["app:reachable", "auth:signed-in", "route:/dashboard"],
+    "file": "flows/F-001-home/F-001.scenarios.ts",
+    "mutations": ["unauth", "wrong-role"],
+    "invoke": { "fn": "S_001_02_dashboardLoads", "spec": "tests/F-001-home.spec.ts" }
+  }
+]

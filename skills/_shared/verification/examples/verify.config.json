@@ -1,0 +1,15 @@
+{
+  "scenarios": "contracts.json",
+  "journeys": "journeys.json",
+  "checkers": [
+    "./verify-plugins/no-empty-assertion.js"
+  ],
+  "runner": "./verify-plugins/runner.js",
+  "smoke":    { "concurrency": 8, "timeoutMs": 30000 },
+  "mutation": { "enabled": true, "kinds": ["unauth", "wrong-role", "wrong-url"], "cacheDir": ".cache/mutation", "concurrency": 4, "timeoutMs": 30000 },
+  "output":   { "runsDir": "runs" },
+  "vocabulary": {
+    "roles": ["anonymous", "free", "pro", "admin"],
+    "stateTagPrefixes": ["app:", "auth:", "route:", "state:", "feature:"]
+  }
+}
