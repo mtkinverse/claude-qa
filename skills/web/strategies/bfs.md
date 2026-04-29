@@ -35,6 +35,10 @@ after loop: mark flow TRACED in journey-inventory.md; auto-advance to next PENDI
 
 **Outcome classification**: every interaction calls `qa/scripts/outcome-classifier.js` (see `skills/web/helpers/outcome-classifier.md`) and branches on the returned label. ONLY `no-change` increments `consecutiveStalls`. `error-surfaced` / `auth-rejected-server` / `form-reset-silent` / `network-timeout` engage the user via `AskUserQuestion` — never silently counted as a stall. **Login forms are handled via `qa/scripts/login-engage.js`** (see `skills/web/helpers/login-engage.md`); direct fill+click is forbidden.
 
+**Trace + UIG emission**: every interaction is recorded via `qa/scripts/trace-recorder.js` (template: `skills/web/templates/trace-recorder.js`) into `qa/flows/F-NNN-*/trace.jsonl`. Every page snapshot via `qa/scripts/snapshot-page.js` appends UIG rows to `qa/knowledgebase/uig.jsonl`. These two files — not `scenarios.md` prose — are the inputs Phase 3 transpiles into TS code. Do not skip them on the BFS path.
+
+**Wiggle-pass on disabled controls**: when `snapshotPage()` reports a disabled interactable on the critical path (any wizard, form submit, or onboarding affordance), call `qa/scripts/wiggle-pass.js` (template: `skills/web/templates/wiggle-pass.js`) before moving on. It toggles enabled siblings in the same scope, records which ones flip the disabled control to enabled, and writes the discovered preconditions to `uig.jsonl`. Generic procedure — never write per-app patterns to handle "Continue requires X and Y."
+
 ---
 
 ### Step W-2: BFS Deep Crawl — Discover Every Page
@@ -456,6 +460,25 @@ while (state.queue.length > 0) {
 
   // Safe button discovery — see W-2.5 for the whitelist logic
   // Runs AFTER screenshot so button clicks don't corrupt the captured state.
+
+  // ── 11b. WIGGLE-PASS — discover preconditions on disabled controls ──
+  // Generic across apps. No per-app patterns. Updates uig.jsonl with preconditions
+  // for any disabled interactable observed on the snapshot.
+  const { wigglePass } = require('./wiggle-pass');
+  for (const btn of (dom.buttons || []).filter(b => b.disabled && b.visible && b.name)) {
+    await wigglePass(page, {
+      scope: btn.scope || 'root',                  // UIG-shape, resolved by scope-resolver.js
+      disabledTarget: { role: btn.role || 'button', name: btn.name, exact: btn.exact !== false },
+      flowId: 'seed-crawl',
+    }).catch(() => {});
+  }
+
+  // ── 11c. TRACE — append the goto event to this page's flow trace ──
+  // Once the BFS settles into per-flow context (after W-3), the recorder is
+  // initialised per-flow. During seed-crawl, all events go to seed-crawl/trace.jsonl.
+  const { TraceRecorder } = require('./trace-recorder');
+  const recorder = new TraceRecorder('seed-crawl');
+  recorder.goto(actual, nav.redirected ? 'navigated' : 'navigated');
 
   // ── 12. RECORD — update page manifest and save to disk ──
   state.pages.push({

@@ -76,6 +76,9 @@ Real files — copy at runtime, no edits required (they read `.env.qa` dynamical
 |---|---|---|
 | `playwright.config.ts` | `qa/playwright.config.ts` | W-1 |
 | `snapshot-page.js` | `qa/scripts/snapshot-page.js` | W-2.5 (once per session) |
+| `wiggle-pass.js` | `qa/scripts/wiggle-pass.js` | W-2.5 (once per session) — precondition discovery |
+| `trace-recorder.js` | `qa/scripts/trace-recorder.js` | W-2.5 (once per session) — emits per-flow `trace.jsonl` |
+| `heal.js` | `qa/scripts/heal.js` | After W-10 — self-heal locator cascade for runtime |
 | `auth.setup.ts` | `qa/auth.setup.ts` | W-7 (selectors need adapting) |
 | `run.js` | `qa/run.js` | After W-10 |
 | `package.json` | `qa/package.json` | After W-10 |

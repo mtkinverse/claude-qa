@@ -19,6 +19,13 @@ console.log('→ Installing dependencies...');
 execSync('npm install --silent', { stdio: 'inherit', cwd: __dirname });
 execSync('node ./node_modules/playwright/cli.js install chromium --quiet', { stdio: 'inherit', cwd: __dirname });
 
+// Self-heal cascade — heal.js is auto-imported by generated specs via shared-helpers.
+// We export QA_QUIRKS_PATH so the cascade can find app-quirks.yml regardless of cwd.
+process.env.QA_QUIRKS_PATH = process.env.QA_QUIRKS_PATH || require('path').join(__dirname, 'app-quirks.yml');
+process.env.QA_SNAPSHOT_DIR = process.env.QA_SNAPSHOT_DIR || require('path').join(__dirname, 'knowledgebase', 'aria-snapshots');
+process.env.QA_AUTO_FIX_PATH = process.env.QA_AUTO_FIX_PATH || require('path').join(__dirname, 'auto-fixes.md');
+process.env.QA_EVIDENCE_DIR = process.env.QA_EVIDENCE_DIR || require('path').join(__dirname, 'evidence');
+
 let target = '';
 if (flow)                        target = `tests/${flow}-*.spec.ts`;
 else if (journey)                target = `journeys/${journey}-*.spec.ts`;

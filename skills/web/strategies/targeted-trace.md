@@ -80,10 +80,17 @@ const browser = await chromium.launch({ headless: process.env.QA_HEADLESS !== 'f
 const context = await browser.newContext();
 const page = await context.newPage();
 
-// Outcome classifier + login engagement helpers (see skills/web/helpers/)
+// Outcome classifier + login engagement + trace + wiggle helpers (see skills/web/templates/)
 const { attachListeners, snapshot, classify } = require('./outcome-classifier.js');
 const { loginEngage } = require('./login-engage.js');
+const { TraceRecorder, uigRef } = require('./trace-recorder.js');
+const { wigglePass } = require('./wiggle-pass.js');
+const { snapshotPage } = require('./snapshot-page.js');
 const buf = attachListeners(context);
+
+// Trace recorder is per-flow. Initialise with the targeted flow's ID.
+// Phase 3 reads the resulting trace.jsonl and transpiles it to scenario code.
+const recorder = new TraceRecorder(process.env.QA_TRACE_FLOW_ID || 'targeted-trace');
 
 await page.goto(process.env.QA_APP_URL, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(PAGE_WAIT_MS);
@@ -133,12 +140,28 @@ for (let step = 1; step <= MAX_STEPS; step++) {
     file,
   });
 
-  fs.appendFileSync('qa/classifier-log.jsonl',
-    JSON.stringify({ ts: Date.now(), step, label: outcome.label, url: page.url() }) + '\n');
+  // Single source of truth for the action trail Phase 3 transpiles from.
+  recorder.interaction({
+    action: nextAction.kind || 'click',
+    uig_ref: nextAction.uig_ref,
+    target: nextAction.label,
+    outcome: outcome.label,
+    evidence: { url: page.url(), screenshot: file },
+  });
 
   if (outcome.label === 'no-change') {
     consecutiveStalls++;
     appendDecision(`Step ${step} no-change: ${nextAction.label}.`);
+    // Wiggle-pass — if the no-change came from clicking a disabled control on
+    // the critical path, learn its preconditions instead of stalling. Generic
+    // mechanism — no per-app patterns.
+    if (nextAction.disabled && nextAction.scope) {
+      await wigglePass(page, {
+        scope: nextAction.scope,                   // UIG-shape, resolved by scope-resolver.js
+        disabledTarget: { role: nextAction.role || 'button', name: nextAction.label, exact: true },
+        flowId: process.env.QA_TRACE_FLOW_ID || 'targeted-trace',
+      }).catch(() => {});
+    }
     if (consecutiveStalls >= 3) {
       appendDecision('Three consecutive no-change — switching to BFS strategy.');
       break;

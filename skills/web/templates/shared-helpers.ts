@@ -1,7 +1,7 @@
 // shared-helpers.ts — copy relevant sections into F-NNN.scenarios.ts at Phase 3 time.
 // Do not import this file directly — it is a template, not a module.
 
-import { Page, BrowserContext, expect } from '@playwright/test';
+import { Page, BrowserContext, expect, Response as PWResponse } from '@playwright/test';
 
 // ─── ANALYTICS FILTER ────────────────────────────────────────────────────────
 // Use this in any test that asserts "no API calls fired".
@@ -9,6 +9,142 @@ import { Page, BrowserContext, expect } from '@playwright/test';
 
 export const ANALYTICS_HOSTS =
   /google\.|googleapis\.|doubleclick\.|segment\.|mixpanel\.|amplitude\.|analytics\.|hotjar\.|intercom\.|sentry\.|clarity\.|supabase\.co\/functions\/v1\/track|facebook\.|twitter\.|tiktok\.|reddit\./i;
+
+// ─── ACT() — CLASSIFIED-OUTCOME WRAPPER FOR INTERACTIONS ─────────────────────
+// Mirrors qa/scripts/outcome-classifier.js semantics in TS. Every Phase 3
+// scenario function should wrap interactions in act() and assert against
+// `result.label`, NOT against URL strings or query params.
+//
+// Why: SPA routers silently strip query params (?mode=signin, ?tab=terms),
+// auth pages reset forms without rendering errors, and `toHaveURL` polls a
+// URL that may never change. The classifier reads SIX cheap signals at once
+// (url, body length, error markers, cookie/storage delta, input emptiness,
+// dialog state) and labels the outcome — robust to all three failure modes.
+//
+// Generic across platforms: the same shape works for macOS AX (cookie/url
+// signals replaced with element-tree deltas) — only the snapshot primitive
+// changes.
+
+export type ActOpts = {
+  isAuth?: boolean;
+  /** Extra console-error patterns to allowlist (merged with quirks-derived list). */
+  consoleAllowlist?: RegExp[];
+  /** Wait after the action settles, in ms. */
+  settleMs?: number;
+};
+
+export type ActResult = {
+  label: 'navigated' | 'dom-updated' | 'modal-opened' | 'error-surfaced'
+       | 'auth-rejected-server' | 'form-reset-silent' | 'auth-success'
+       | 'network-timeout' | 'no-change';
+  evidence: {
+    from: string; to: string;
+    bodyDelta: number;
+    errorText?: string;
+    cookieAdded?: boolean;
+    tokenAdded?: boolean;
+    consoleErrors?: string[];
+  };
+};
+
+const ERROR_SELECTORS = '[role="alert"], .error, .invalid-feedback, [aria-invalid="true"], .toast, [data-testid*="error"], .alert-danger';
+const ERROR_REGEX_SRC = 'invalid|incorrect|failed|wrong|denied|rejected|unauthori[sz]ed|forbidden';
+const AUTH_URL_REGEX = /\/(login|signin|auth|session|token)/i;
+
+async function _snapshot(page: Page) {
+  return page.evaluate(({ errSel, errRe }) => ({
+    url: location.href,
+    bodyLen: document.body.innerText.length,
+    errorVisible:
+      !!document.querySelector(errSel) ||
+      new RegExp(errRe, 'i').test(document.body.innerText.slice(0, 4000)),
+    errorText: ((document.querySelector(errSel) as HTMLElement)?.innerText || '').slice(0, 200),
+    cookieCount: document.cookie.split(';').filter(Boolean).length,
+    storageKeys: Object.keys(localStorage).length,
+    inputsEmpty: Array.from(document.querySelectorAll('input,textarea')).every(
+      (i: any) => !(i as HTMLInputElement).value
+    ),
+    dialogOpen: !!document.querySelector('[role="dialog"], [aria-modal="true"]'),
+  }), { errSel: ERROR_SELECTORS, errRe: ERROR_REGEX_SRC });
+}
+
+/**
+ * Run `fn` (an interaction) and return a labeled outcome.
+ * Replaces `expect(page).toHaveURL(/.../)` and `page.waitForURL(...)` for any
+ * post-click verification.
+ */
+export async function act<T>(
+  page: Page,
+  fn: () => Promise<T>,
+  opts: ActOpts = {}
+): Promise<ActResult & { value?: T }> {
+  const consoleErrors: string[] = [];
+  const onConsole = (msg: any) => { if (msg.type() === 'error') consoleErrors.push(msg.text()); };
+  page.on('console', onConsole);
+
+  const before = await _snapshot(page);
+  let value: T | undefined;
+  let timedOut = false;
+  try {
+    value = await fn();
+  } catch (e: any) {
+    if (/timeout/i.test(e?.message || '')) timedOut = true;
+    else throw e;
+  }
+  await page.waitForTimeout(opts.settleMs ?? 400);
+  const after = await _snapshot(page);
+  page.off('console', onConsole);
+
+  // Filter allowlisted console errors; remaining errors surface in evidence.
+  const allow = opts.consoleAllowlist || [];
+  const remainingErrors = consoleErrors.filter(e => !allow.some(rx => rx.test(e)));
+
+  let label: ActResult['label'];
+  if (timedOut) label = 'network-timeout';
+  else if (after.dialogOpen && !before.dialogOpen) label = 'modal-opened';
+  else if (after.errorVisible && !before.errorVisible) label = 'error-surfaced';
+  else if (opts.isAuth && AUTH_URL_REGEX.test(after.url) && after.inputsEmpty && after.url === before.url && !after.errorVisible) {
+    label = 'form-reset-silent';
+  } else if (opts.isAuth && (after.cookieCount > before.cookieCount || after.storageKeys > before.storageKeys)) {
+    label = 'auth-success';
+  } else if (after.url !== before.url) label = 'navigated';
+  else if (Math.abs(after.bodyLen - before.bodyLen) > 100) label = 'dom-updated';
+  else label = 'no-change';
+
+  const evidence: ActResult['evidence'] = {
+    from: before.url,
+    to: after.url,
+    bodyDelta: after.bodyLen - before.bodyLen,
+    errorText: after.errorText,
+    cookieAdded: after.cookieCount > before.cookieCount,
+    tokenAdded: after.storageKeys > before.storageKeys,
+  };
+  if (remainingErrors.length) evidence.consoleErrors = remainingErrors;
+
+  return { label, evidence, value };
+}
+
+/**
+ * Assert that no console errors fired during `fn`, after filtering the
+ * provided allowlist (typically loaded from qa/app-quirks.yml). Use INSTEAD of
+ * raw `expect(consoleErrors).toHaveLength(0)` — analytics noise gets filtered.
+ */
+export async function expectConsoleClean(
+  page: Page,
+  fn: () => Promise<void>,
+  allowlist: RegExp[] = []
+): Promise<void> {
+  const errors: string[] = [];
+  const onConsole = (msg: any) => { if (msg.type() === 'error') errors.push(msg.text()); };
+  page.on('console', onConsole);
+  try {
+    await fn();
+  } finally {
+    page.off('console', onConsole);
+  }
+  const remaining = errors.filter(e => !allowlist.some(rx => rx.test(e)));
+  expect(remaining, `Console errors:\n${remaining.join('\n')}`).toHaveLength(0);
+}
 
 // ─── AUTH GUARD ──────────────────────────────────────────────────────────────
 // Call at the start of every function that navigates to a protected route.

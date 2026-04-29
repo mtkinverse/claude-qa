@@ -13,14 +13,17 @@ Phase 1 creates EXACTLY these files and nothing else:
 |---|---|---|
 | `flow.md` | `qa/flows/F-NNN-<slug>/flow.md` | W-3: one per feature area, discovery evidence only |
 | `manifest.jsonl` | `qa/flows/F-NNN-<slug>/manifest.jsonl` | W-3: step-by-step trace plan |
+| `trace.jsonl` | `qa/flows/F-NNN-<slug>/trace.jsonl` | W-2.5+: per-flow action recording, transpiled by Phase 3 |
 | `ui-inventory.md` | `qa/knowledgebase/` | W-2.5: ongoing, updated per page |
 | `nav-graph.md` | `qa/knowledgebase/` | W-2.5: ongoing |
+| `uig.jsonl` | `qa/knowledgebase/` | W-2.5: append-only Interactable Graph; primary input to Phase 3 |
 | `roles.md` | `qa/knowledgebase/` | W-2.9 |
 | `flow-categories.md` | `qa/knowledgebase/` | W-2.9 |
 | `journey-inventory.md` | `qa/knowledgebase/` | W-6 |
 | `crawl-todo.md` | `qa/knowledgebase/` | W-2.5: URL discovery tracker |
 | `*.snapshot.json` | `qa/knowledgebase/aria-snapshots/` | W-2.5: per page |
 | `crawl-state.json` | `qa/` | W-2.5: BFS state |
+| `app-quirks.yml` | `qa/` | P1→P2 boundary: auto-derived (see `scripts/derive-quirks.js`) |
 | `decisions.md` | `qa/` | ongoing |
 | `state.md` | `qa/` | checkpoints |
 
@@ -484,13 +487,30 @@ Algorithm:
 
 Print a brief progress line after each page: `[crawl] ✅ /path — N pending remaining`.
 
-### 4. Generate report
+### 4. Auto-derive `qa/app-quirks.yml`
+
+Run once at the P1→P2 boundary, AFTER all snapshots and traces are written:
+
+```bash
+node scripts/derive-quirks.js
+```
+
+This populates `qa/app-quirks.yml` from the observed evidence:
+- **Disambiguation**: from UIG `scope` assignments (no `.first()`/`.last()` needed in tests).
+- **Toggle pairs**: from wiggle-pass observations of buttons whose `name` mutates after click.
+- **Console allowlist**: errors firing on >50% of pages without user interaction = app-side noise.
+- **SPA query drops**: detected when `goto('/x?p=1')` settles to a URL without `?p=1`.
+- **Overlay registry**: every `[role=dialog]` / `aria-modal` / `fixed inset-0 z-[…]` overlay seen during BFS, plus its recorded dismiss trace.
+
+The user MAY hand-edit `qa/app-quirks.yml` to override, but this is optional. Phase 3 reads it as the source of truth for selector disambiguation, console-error filtering, and overlay handling — replacing every per-app `*-patterns.md` document.
+
+### 5. Generate report
 
 ```bash
 node scripts/allure/generate-report.js --open
 ```
 
-### 5. Heavy checkpoint
+### 6. Heavy checkpoint
 
 Write full `qa/state.md` (template in runtime.md §3):
 
@@ -513,7 +533,7 @@ Phase 1 complete. Proceeding to Phase 2.
 Re-invoke skill — detects HAS_WORKSPACE and resumes from Phase 2.
 ```
 
-### 6. Continue to Phase 2
+### 7. Continue to Phase 2
 
 Automatic. If auth-gated flows need creds → ask user → continue.
 

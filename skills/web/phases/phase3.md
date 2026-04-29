@@ -1,259 +1,243 @@
-# Web — Phase 3: Test Generation (Three-Layer Spec Suite)
+# Web — Phase 3: Test Transpilation (UIG + Trace → TypeScript)
 
-**Goal**: Write shippable, runnable test code in three coordinated layers — scenario functions, standalone wrappers, sequential E2E journeys. No intermediate TC markdown files.
-**Input**: `qa/flows/F-NNN-*/scenarios.md` + DOM/ARIA snapshots from Phase 1.
-**Output**:
-- `qa/flows/F-NNN-<slug>/F-NNN.scenarios.ts` — exported async scenario functions (reusable core)
+**Goal**: Mechanically transpile observed evidence into shippable Playwright code. **No prose re-derivation.** Selectors come from `uig.jsonl`; interaction sequences come from `trace.jsonl`; disambiguation comes from `app-quirks.yml`. The agent does not invent.
+
+**Inputs (read-only)**:
+- `qa/knowledgebase/uig.jsonl` — Interactable Graph (scope, role, name, exact, preconditions, effect)
+- `qa/flows/F-NNN-<slug>/trace.jsonl` — recorded actions for the flow
+- `qa/flows/F-NNN-<slug>/scenarios.md` — *menu* of which traces to ship + any L4 contract assertions
+- `qa/app-quirks.yml` — auto-derived disambiguation / toggle pairs / console allowlist / SPA query drops / overlay registry
+- `qa/knowledgebase/aria-snapshots/*.snapshot.json` — only when an L4 contract names a value to extract
+
+**Outputs**:
+- `qa/flows/F-NNN-<slug>/F-NNN.scenarios.ts` — exported async scenario functions, each carrying a `.contract` sidecar
 - `qa/tests/F-NNN-<slug>.spec.ts` — thin standalone wrappers
-- `qa/journeys/J-NNN-<role>.spec.ts` — sequential E2E journeys (shared session, `test.step()` chains)
-- `qa/journey-todo/J-NNN-<role>.todo.md` — generation + runtime tracking per journey
+- `qa/journeys/J-NNN-<role>.spec.ts` — emitted by `scripts/assemble-journey.js`, NOT hand-ordered
+- `qa/journey-todo/J-NNN-<role>.todo.md` — generation + runtime tracking
 
-**Transition**: automatic — after all flow specs + journeys written, Phase 4 runs them.
+**Transition**: automatic — after all flow specs written and journey assembled, Phase 4 runs them.
 
 Runtime rules — see `skills/_shared/runtime.md`.
 
 ---
 
-## Context Management — Critical
+## ⛔ Phase 3 Non-Negotiables
 
-Write ONE flow's `F-NNN.scenarios.ts` per context window. After each flow:
-1. Write `F-NNN.scenarios.ts` + `qa/tests/F-NNN-<slug>.spec.ts`
-2. Append `test.step()` calls into the relevant `qa/journeys/J-NNN.spec.ts`
-3. Mark flow done in `qa/journey-todo/J-NNN.todo.md`
-4. Light checkpoint `qa/state.md`
-5. Tell user: *"F-NNN done ([N] functions). Next: F-[NNN+1] — [name]. Say 'continue'."*
-
-Never write multiple flows in one context if the previous flow had >25 functions.
+1. **No prose-driven selectors.** Every `getByRole`/`getByText`/`locator` call must be derivable from a UIG row. If you cannot point to the `uig.jsonl` row that authorises a selector, do not emit it.
+2. **Scope is mandatory.** Every locator scope-prefixes via `page.locator(scope).getByRole(...)`. Never `.first()` / `.last()` for disambiguation.
+3. **Interactions go through `act()`.** No bare `waitForURL` / `toHaveURL` on SPA query params. Assert against `result.label`.
+4. **Every scenario exports a `.contract`.** No JSDoc-only entry/exit prose.
+5. **Layers L1+L2+L3 are emitted for every UIG-covered route.** L4 only when `qa/context/` has PRDs.
+6. **No per-app patterns.** If you find yourself wanting to write a quirk inline, instead append it to `qa/app-quirks.yml` and the transpiler picks it up.
 
 ---
 
-## Step W-10: Three-Layer Spec Writing
+## Step W-10: Transpilation
 
-### Quality Contract — every function and spec MUST satisfy ALL before Phase 4
+### W-10.1 — Load inputs once (transpile-time, not runtime)
 
-1. **Syntactically valid TypeScript** — no missing `await`, no unresolved imports, no `any` on assertions.
-2. **Logically complete** — every function body has a meaningful `expect()`. No `// TODO`, no empty assertions.
-3. **No placeholder values** — no `[selector]`, `[route]`, `[label]`, `[value]`.
-4. **No hardcoded credentials** — all via `process.env.QA_*`.
-5. **Semantic locators preferred** — `getByRole` > `getByLabel` > `getByTestId` > CSS. CSS only with a comment.
-6. **No bare `waitForTimeout`** — use `waitForSelector` / `waitForResponse` / `waitForURL` / `waitForFunction`.
-7. **storageState set at describe level or via journey config** — never re-login inside a function that expects a cached session.
-8. **`toHaveURL` over `waitForURL` for post-click checks** — `waitForURL` waits for a future navigation event; if the SPA navigated synchronously during the click, it waits forever for a second one. `toHaveURL` polls the current URL and works whether the navigation was fast or slow. Use `waitForURL` only when you need to wait for a navigation that has NOT started yet.
-9. **`exact: true` on every string `getByRole` name** — Playwright partial-matches by default, causing strict-mode errors when a short name is a prefix of a longer one (e.g. `"Sign up"` matches `"Sign up for Free"`, `"$5"` matches `"$50"`). Always pass `{ exact: true }` unless using a regex name.
-10. **URL assertions use regex; never assert query params on SPAs** — `toHaveURL('/')` is fragile. Always use regex: `toHaveURL(/\/path/)`. Do NOT assert SPA query params (`?mode=signin`, `?tab=terms`) — client-side routers silently strip or never set them. Do NOT use `waitForURL(/param=value/)` when a form-mode toggle works via JS state — assert *form state* instead (e.g. a field that only appears in one mode).
-11. **axe-core violations are warnings, not failures** — use `console.warn()` for violations; only `throw` if axe itself failed to run. Filter to `impact === 'critical' || impact === 'serious'`.
-12. **`inputValue()` not `textContent()` for form elements** — `textContent()` always returns `""` on `<select>`, `<input>`, `<textarea>`. Use `inputValue()`. Check the ARIA snapshot to confirm which role (`textbox` vs `combobox`) the target field has before writing the locator.
-13. **Stateful buttons — assert the NEW label for the second action** — toggle buttons (`show/hide password`, `expand/collapse`, mode-switch) have a different `name` after each click. Never click the same name twice. Read the ARIA snapshot to know the label in each state.
+The transpiler runs at Phase 3 generation time; it reads the inputs once and **inlines** what each scenario needs into the emitted TS file. Generated specs must NOT read these files at runtime — they should embed the data they need as `const`s.
 
-### Standards
+```ts
+// transpile-time helper — runs in scripts/, not in qa/tests/
+import * as fs from 'fs';
 
-- `waitUntil: 'domcontentloaded'` (never `networkidle` on SPAs)
-- All URLs relative — `page.goto('/')` not `page.goto('https://...')`
-- `baseURL` from `QA_APP_URL` via `qa/playwright.config.ts`
-- Credentials from `process.env.QA_*` only
-- Locators derived from `.snapshot.json` files — `aria-label`, `role`, `name`, `placeholder`
+const UIG     = fs.readFileSync('qa/knowledgebase/uig.jsonl', 'utf8').trim().split('\n').map(JSON.parse);
+const QUIRKS  = JSON.parse(fs.readFileSync('qa/.app-quirks.json', 'utf8'));   // runtime sidecar — no YAML parser needed
+const TRACE   = (flowId: string) => fs.readFileSync(`qa/flows/${flowId}/trace.jsonl`, 'utf8').trim().split('\n').map(JSON.parse);
+```
+
+Inlined into each generated `F-NNN.scenarios.ts`:
+
+```ts
+// AUTO-INLINED from qa/.app-quirks.json
+const CONSOLE_ALLOWLIST: RegExp[] = [
+  /Analytics tracking error/,
+  /FunctionsFetchError/,
+  // ...
+];
+```
+
+`expectConsoleClean(page, fn, CONSOLE_ALLOWLIST)` — never re-define the list per scenario.
+
+Newest-wins per `(page, scope, role, name)` when reading UIG (same logic as `audit-snapshots.js`).
+
+### W-10.2 — Resolve a UIG row to a Playwright locator
+
+Pure function. No agent reasoning. The mapping is mechanical:
+
+```ts
+function locatorFor(page: Page, row: UigRow) {
+  // scope is one of: "root" | "nav" | "header" | "footer" | "main"
+  //                | "card[Pro]" | "region[Pricing]" | "tabpanel[X]"
+  //                | "dialog[Onboarding]" | "overlay[Set up]"
+  //                | nested: "dialog[X]>>region[Y]"
+  const scopeChain = row.scope === 'root' ? ['body'] : row.scope.split('>>').map(scopeToCSS);
+  let loc = page.locator(scopeChain.join(' >> ').replace(/^body >> /, ''));
+  return loc.getByRole(row.role as any, { name: row.name, exact: row.exact !== false });
+}
+
+function scopeToCSS(seg: string): string {
+  const card = /^card\[(.+)\]$/.exec(seg);
+  if (card) return `:has(:scope > h1:text-is("${card[1]}"), :scope > h2:text-is("${card[1]}"), :scope > h3:text-is("${card[1]}"))`;
+  if (seg === 'nav')    return 'nav, [role="navigation"]';
+  if (seg === 'header') return 'header';
+  if (seg === 'footer') return 'footer, [role="contentinfo"]';
+  if (seg === 'main')   return 'main, [role="main"]';
+  const region = /^region\[(.+)\]$/.exec(seg);
+  if (region) return `[role="region"]:has(h1:text-is("${region[1]}")), section:has(h1:text-is("${region[1]}"))`;
+  const dialog = /^(dialog|overlay)\[(.+)\]$/.exec(seg);
+  if (dialog) return `[role="dialog"]:has(:text-is("${dialog[2]}")), [aria-modal="true"]:has(:text-is("${dialog[2]}"))`;
+  return seg; // fall through
+}
+```
+
+Use this helper inside every emitted scenario. Do not write ad-hoc selectors.
+
+### W-10.3 — Transpile one trace into one scenario function
+
+For each scenario in `scenarios.md`, the menu names a `traceSlice` (range of trace events). The transpiler walks the slice and emits one `act()` call per `interaction` event and one `expect()` per `assert` event.
+
+```ts
+// Emitted shape — every scenario follows this pattern
+export async function S_NNN_NN_<name>(page: Page, ctx: BrowserContext): Promise<void> {
+  // <-- L1 setup: navigate to entry route from the trace's first goto event -->
+  const goto1 = await act(page, () => page.goto('<route from trace.jsonl>', { waitUntil: 'domcontentloaded' }));
+  expect(goto1.label).toBe('navigated');
+
+  // <-- one block per interaction event in the trace slice -->
+  const r1 = await act(page, () =>
+    locatorFor(page, /* uig row from uig_ref */).click()
+  );
+  expect(r1.label).not.toBe('error-surfaced');
+
+  // <-- one expect() per assert event -->
+  await expect(locatorFor(page, /* uig row */)).toBeVisible();
+}
+
+S_NNN_NN_<name>.contract = {
+  preconditions:  [/* derived from trace slice's first event's prior state */],
+  postconditions: [/* derived from trace slice's last event's posterior state */],
+  sideEffects:    [/* if the trace touches viewport, cookies, page.route, etc. */],
+};
+```
+
+The transpiler **never inserts** a selector or assertion that has no UIG row or trace event backing it. If the menu asks for a scenario that the trace doesn't cover, the transpiler writes a `test.skip()` stub with reason `"no trace evidence"` rather than fabricating one.
 
 ---
 
+## W-10.4 — Layered emission per route
+
+For every distinct route reached by `trace.jsonl`, emit four functions automatically:
+
+| Layer | Function name | Asserts |
+|---|---|---|
+| L1 Smoke | `S_NNN_smoke_<route>` | `goto` returns label `navigated`, page has H1, console clean per `app-quirks.yml.console_allowlist` |
+| L2 Shape | `S_NNN_shape_<route>` | UIG interactable counts ±1 vs Phase 1 snapshot, `getByRole('heading', { level: 1 })` visible |
+| L3 Behavior | `S_NNN_behavior_<uigRef>` (one per interactable) | clicking the UIG element produces its recorded `effect` (label match) |
+| L4 Contract | `S_NNN_contract_<id>` | only generated when a matching entry exists in `qa/context/` |
+
+L1+L2+L3 are emitted ALWAYS — fully autonomous. L4 is opt-in by user-supplied PRD content (handled by the transpiler reading `qa/context/feature-specs/*.md`).
+
 ---
 
-## Auth Crawl Strategy (W-7 / `auth-crawl.js`)
+## W-10.5 — Contract sidecar
 
-Always try **signup first**, fall back to login if the account already exists:
+Every scenario function ships with a typed contract. The journey planner consumes this:
 
-1. Navigate to the app's signup page (from Phase 1 nav-graph) → fill email + password + confirm-password → submit.
-2. Classify result via `armAuthWatcher` — arm `waitForResponse` for auth POSTs **before** clicking submit, never rely on URL change alone:
-   - `auth-success` → save `storageState` to `qa/.auth/<role>.json`, add `QA_<ROLE>_STORAGE_STATE=qa/.auth/<role>.json` to `.env.qa`.
-   - `user-already-exists` / `auth-rejected-server` / `error-surfaced` → fall back to the signin page → fill email + password → submit.
-3. **Run `auth-crawl.js` from the repo root** — `dotenv` resolves `.env.qa` relative to `process.cwd()`, not `__dirname`. The script should walk up from `__dirname` to find `.env.qa` automatically.
+```ts
+type ScenarioContract = {
+  preconditions: string[];   // e.g. ["route:/dashboard", "overlay:onboarding-wizard:step=ai", "auth=true"]
+  postconditions: string[];
+  sideEffects: ('viewport-change' | 'cookies-cleared' | 'route-mocked')[];
+};
+```
+
+Derivation rules:
+- `route:/X` — from `goto` events.
+- `overlay:<id>:<state>` — from UIG rows whose scope is in the overlay registry.
+- `auth=true` / `auth=false` — from trace events whose outcome was `auth-success` / `signOut` action.
+- `viewport-change` — emitted when the scenario calls `page.setViewportSize`.
+- `cookies-cleared` — emitted when the scenario calls `ctx.clearCookies` or signs out.
+- `route-mocked` — emitted when the scenario calls `page.route`.
+
+The journey planner uses contracts to mechanically order steps, inject setup, and wrap side effects in `try/finally`. **No "MUST be last" comments. No hand-pinned ordering.**
 
 ---
 
-## Shared Helper Patterns
+## W-10.6 — Skip semantics
 
-Every `F-NNN.scenarios.ts` that needs the patterns below should copy them from `skills/web/templates/shared-helpers.ts`. Do not inline them by hand — copy the file section verbatim.
+A scenario whose preconditions cannot be satisfied at runtime calls `test.skip(true, reason)` — never a vacuous early `return`. The runtime engine in `qa/scripts/heal.js` cooperates: if the planner injected a setup step that fails, the dependent scenario skips with a diagnosable message.
 
-| Helper | When to use |
+```ts
+// Emitted when preconditions like "wizard.step=ai" cannot be reached
+test.skip(!await canReach(page, ['wizard.step=ai']), 'precondition unmet: wizard.step=ai');
+```
+
+Vacuous green tests are gone. A skip is honest reporting.
+
+---
+
+## Step W-10.7: Standalone wrappers (Layer 2 file)
+
+Mechanical — one `test()` per exported scenario function. No logic.
+
+```ts
+// qa/tests/F-NNN-<slug>.spec.ts
+import { test } from '@playwright/test';
+import * as F from '../flows/F-NNN-<slug>/F-NNN.scenarios';
+
+test.describe('F-NNN: <name>', () => {
+  for (const fnName of Object.keys(F)) {
+    if (typeof (F as any)[fnName] !== 'function') continue;
+    test(fnName, async ({ page, context }) => (F as any)[fnName](page, context));
+  }
+});
+```
+
+Mixed-auth flows: the wrapper introspects each function's `.contract.preconditions`. If `auth=true` is required, it loads `storageState` from the corresponding `.auth/<role>.json`. No `test.use()` per group.
+
+---
+
+## Step W-10.8: Journey assembly (handed off to the planner)
+
+After every flow's scenarios are written, run the journey planner:
+
+```bash
+node scripts/assemble-journey.js --role free
+node scripts/assemble-journey.js --role anonymous
+```
+
+The planner:
+1. Reads `.contract` sidecars from every emitted scenario.
+2. Reads `qa/knowledgebase/uig.jsonl` for setup-action discovery.
+3. Topologically orders scenarios so each step's preconditions are satisfied.
+4. Injects setup steps from the UIG when current state lacks required preconditions.
+5. Wraps `sideEffects` (viewport, cookies, route mocks) in journey-level `try/finally`.
+6. Emits `qa/journeys/J-NNN-<role>.spec.ts` and `qa/journey-todo/J-NNN-<role>.todo.md`.
+
+**No hand-ordered journey files.** No "MUST be last" comments. No viewport-restoration commentary. The planner produces the entire `.spec.ts` from the contracts.
+
+---
+
+## Quality contract — same as before, plus new
+
+| Rule | Source |
 |---|---|
-| `ANALYTICS_HOSTS` | Any test that asserts "no API calls fired" — filter this regex from the `request` listener |
-| `assertAuthenticated(page)` | First line of every function that navigates to a protected route |
-| `dismissWizardIfPresent(page)` | Any scenario that tests post-login UI on a fresh account (wizard may overlay the main UI) |
-
-**API-call monitors must exclude analytics** — never assert `toHaveLength(0)` on an unfiltered request list. Analytics fire on every navigation. Use `ANALYTICS_HOSTS` to filter.
-
-**Auth guard** — at the start of every auth-required function, call `assertAuthenticated(page)`. If the page redirected to `/account`, throw a clear error with the refresh command.
-
-**Onboarding wizard** — fresh accounts may show a full-screen wizard (`fixed inset-0 z-[2147483647]`) that blocks all pointer events. Call `dismissWizardIfPresent(page)` before interacting with post-login UI. Adapt the step markers in the template to the observed app (read the ARIA snapshot of the post-login page first).
-
-→ See `skills/web/templates/shared-helpers.ts` for canonical implementations.
-
----
-
-### Layer 1: Scenario Functions (`qa/flows/F-NNN-<slug>/F-NNN.scenarios.ts`)
-
-Each scenario from `scenarios.md` becomes an exported async function receiving `page` and `context` from the caller. Plain async — no Playwright fixtures beyond `Page` and `BrowserContext`.
-
-```typescript
-// qa/flows/F-001-marketing-landing/F-001.scenarios.ts
-// Callable from standalone tests OR journey specs.
-//
-// Entry state: any (functions navigate as needed)
-// Exit state:  documented per function in JSDoc
-
-import { Page, BrowserContext, expect } from '@playwright/test';
-import * as dotenv from 'dotenv';
-import * as path from 'path';
-dotenv.config({ path: path.resolve(__dirname, '../../../.env.qa') });
-
-/**
- * S-001-01: Happy Path — home loads with hero + CTAs
- * Entry: any URL  |  Exit: page is at '/'
- */
-export async function S_001_01_happyPath(page: Page, _ctx: BrowserContext): Promise<void> {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByRole('heading', { name: /Say hello/i })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Sign up' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Log in' })).toBeVisible();
-}
-
-/**
- * S-001-02: CTA — "Sign up" routes to /account
- * Entry: page is at '/'  |  Exit: page is at '/account'
- */
-export async function S_001_02_ctaSignUp(page: Page, _ctx: BrowserContext): Promise<void> {
-  await page.getByRole('link', { name: 'Sign up' }).click();
-  await page.waitForURL(/\/account/, { timeout: 10000 });
-  await expect(page.getByRole('textbox', { name: /email/i })).toBeVisible();
-}
-
-// ... one exported function per scenario in scenarios.md
-// Naming: S_NNN_NN_camelCaseDescription — matches scenario ID exactly
-```
-
-**Rules:**
-- **Self-contained navigation**: each function navigates to its entry URL at start (unless JSDoc says it continues from caller's position).
-- **No cross-function calls.**
-- **Entry/exit documented** in JSDoc — tells the journey what state is left.
-- **Journey-continuation functions**: if function N's exit = function N+1's entry, the journey can skip the redundant `page.goto()` in N+1 — note this in JSDoc.
+| Syntactically valid TypeScript | language |
+| No hardcoded URLs / credentials — all via `process.env.QA_*` | runtime |
+| `waitUntil: 'domcontentloaded'` (never `networkidle` on SPAs) | runtime |
+| **Every interaction wrapped in `act()`** | NEW |
+| **Every locator scope-qualified** | NEW |
+| **Every function has `.contract`** | NEW |
+| **No `.first()` / `.last()` for disambiguation** — fail audit | NEW |
+| **No raw `toHaveURL(/\?param=/)` for SPA params** — use `act()` label | NEW |
+| **Console assertions filter via `app-quirks.yml.console_allowlist`** — use `expectConsoleClean()` | NEW |
+| Stateful buttons use the toggle-pair from `app-quirks.yml.toggle_pairs` | NEW |
 
 ---
 
-### Layer 2: Standalone Spec Wrappers (`qa/tests/F-NNN-<slug>.spec.ts`)
-
-Thin files that import the scenario module and wrap each function in `test()`. Each test gets a fresh page; functions self-navigate.
-
-```typescript
-// qa/tests/F-001-marketing-landing.spec.ts
-import { test } from '@playwright/test';
-import * as F001 from '../flows/F-001-marketing-landing/F-001.scenarios';
-
-test.describe('F-001: Marketing Landing', () => {
-  test('S-001-01: Happy path', async ({ page, context }) => {
-    await F001.S_001_01_happyPath(page, context);
-  });
-
-  test('S-001-02: CTA — Sign up routes to /account', async ({ page, context }) => {
-    await page.goto('/');  // explicit reset
-    await F001.S_001_02_ctaSignUp(page, context);
-  });
-});
-```
-
-Run: `npx playwright test tests/F-001-marketing-landing.spec.ts`
-
-**Mixed-auth flows** — use `test.use()` per group:
-
-```typescript
-test.describe('F-003: Auth — unauthenticated', () => {
-  test('S-003-01: Sign in happy path', async ({ page, context }) => {
-    await F003.S_003_01_signIn(page, context);
-  });
-});
-
-test.describe('F-003: Auth — session-required', () => {
-  test.use({ storageState: '.auth/free.json' });  // relative to qa/
-  test('S-003-14: Session persistence', async ({ page, context }) => {
-    await F003.S_003_14_sessionPersistence(page, context);
-  });
-});
-```
-
----
-
-### Layer 3: Sequential Journey Specs (`qa/journeys/J-NNN-<role>.spec.ts`)
-
-ONE `test()` block per journey. Every scenario call is a `test.step()` for granular reporting. Same `page` and `context` flow through the entire journey.
-
-Selection: include all **P1** + **P2 stateful** scenarios (next flow depends on them). Skip P3 — covered by standalone tests only.
-
-```typescript
-// qa/journeys/J-000-anonymous.spec.ts
-import { test } from '@playwright/test';
-import * as F001 from '../flows/F-001-marketing-landing/F-001.scenarios';
-import * as F002 from '../flows/F-002-pricing/F-002.scenarios';
-import * as F003 from '../flows/F-003-authentication/F-003.scenarios';
-
-test('J-000: Anonymous user journey — full E2E', async ({ page, context }) => {
-  await test.step('F-001-S-001-01: Landing page loads', () =>
-    F001.S_001_01_happyPath(page, context));
-  await test.step('F-001-S-001-08: External links have noopener', () =>
-    F001.S_001_08_externalLinkSafety(page, context));
-  await test.step('F-002-S-002-01: Pricing renders both tiers', () =>
-    F002.S_002_01_happyPath(page, context));
-  await test.step('F-003-S-003-13: /dashboard unauth → signin redirect', () =>
-    F003.S_003_13_authGuard(page, context));
-});
-```
-
-Authenticated journey — `storageState` at file level:
-
-```typescript
-// qa/journeys/J-001-free.spec.ts
-import { test } from '@playwright/test';
-import * as F003 from '../flows/F-003-authentication/F-003.scenarios';
-import * as F009 from '../flows/F-009-dashboard/F-009.scenarios';
-
-test.use({ storageState: '.auth/free.json' });
-
-test('J-001: Free-tier journey — full E2E', async ({ page, context }) => {
-  await test.step('F-009-S-009-01: Dashboard renders for free user', () =>
-    F009.S_009_01_happyPath(page, context));
-  await test.step('F-003-S-003-16: Sign out clears session', () =>
-    F003.S_003_16_signOut(page, context));
-});
-```
-
-Run: `npx playwright test journeys/J-001-free.spec.ts`
-
----
-
-### Journey Todo File (`qa/journey-todo/J-NNN-<role>.todo.md`)
-
-One per journey, created at the **start of Phase 3** before writing code. Updated as each flow is generated. Agent reads on resume to find the next pending flow.
-
-```markdown
-# Journey Todo — J-000-anonymous
-# Updated: [YYYY-MM-DD]
-
-## Generation Progress
-
-| Flow | Scenarios.ts | Standalone Spec | Added to Journey | Steps Selected |
-|------|--------------|-----------------|------------------|----------------|
-| F-001 | ✅ done | ✅ done | ✅ done | 5/13 (P1+P2) |
-| F-003 | ⬜ pending | ⬜ pending | ⬜ pending | — |
-
-## Journey Step Execution (Phase 4 — updated after run)
-
-| Step | Scenario ID | Function | Status | Error |
-|------|-------------|----------|--------|-------|
-| 1 | S-001-01 | S_001_01_happyPath | ⬜ pending | — |
-```
-
-Status: `⬜ pending` → `⏳ running` → `✅ done` / `❌ failed([reason])`.
-
----
-
-## After all flows written — runner infrastructure
+## Runner infrastructure (after all flows + assembler)
 
 Copy templates (no edits needed; they read `.env.qa` dynamically):
 
@@ -261,19 +245,10 @@ Copy templates (no edits needed; they read `.env.qa` dynamically):
 |---|---|
 | `skills/web/templates/run.js` | `qa/run.js` |
 | `skills/web/templates/package.json` | `qa/package.json` |
+| `skills/web/templates/heal.js` | `qa/scripts/heal.js` |
 | `.env.example` | `qa/.env.example` (if not exists) |
 
-**Phase boundary checkpoint** — heavy `qa/state.md`. Log: `"Phase 3 complete — [N] scenario modules, [N] standalone, [N] journeys."`
-
-Announce:
-
-> "✅ Shippable test suite ready:
-> - `qa/tests/` — [N] standalone flow specs
-> - `qa/journeys/` — [N] sequential E2E journeys
->
-> Run flow: `node qa/run.js --flow F-001`
-> Run journey: `node qa/run.js --journey J-000`
-> Run all: `node qa/run.js`
-> Share: `zip -r qa-suite.zip qa/flows/ qa/tests/ qa/journeys/ qa/journey-todo/ qa/run.js qa/package.json qa/playwright.config.ts`"
+**Phase boundary checkpoint** — heavy `qa/state.md`. Log:
+`"Phase 3 complete — [N] scenario modules, [N] standalone, [N] journeys. UIG rows: [M]. Quirks: [K]."`
 
 → Next: [phase4.md](phase4.md)

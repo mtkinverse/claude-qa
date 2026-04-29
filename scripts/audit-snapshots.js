@@ -78,10 +78,77 @@ if (warnings.length) {
   if (warnings.length > 5) console.log(`   ... and ${warnings.length - 5} more`);
 }
 
-if (issues.length) {
-  console.error(`\n❌ ${issues.length} fidelity issues:`);
-  issues.forEach(i => console.error(`   ${i}`));
+// ── Patterns-file gate ──────────────────────────────────────────────────────
+// App-specific quirks belong in qa/app-quirks.yml (auto-derived). If any
+// *-patterns.md file exists under qa/, fail audit — it indicates per-app
+// pattern documentation that should be in the typed registry instead.
+{
+  const QA_ROOT = path.resolve(DIR, '..', '..');
+  let patternsFiles = [];
+  try {
+    for (const entry of fs.readdirSync(QA_ROOT)) {
+      if (/-patterns\.md$/i.test(entry)) patternsFiles.push(path.join(QA_ROOT, entry));
+    }
+  } catch {}
+  if (patternsFiles.length) {
+    console.error('\n❌ Per-app patterns file(s) detected — these belong in qa/app-quirks.yml:');
+    patternsFiles.forEach(f => console.error('   ' + f));
+    console.error('   Move quirks into the auto-derived registry (re-run scripts/derive-quirks.js).');
+    process.exit(1);
+  }
+}
+
+// ── UIG uniqueness gate ─────────────────────────────────────────────────────
+// Every (page, scope, role, name) tuple in uig.jsonl must resolve to exactly one
+// node within its scope at observation time. If two tuples collide, generation
+// would have to pick `.first()` / `.last()` — which is exactly the failure mode
+// we are eliminating. Force scope refinement instead.
+const UIG_PATH = path.resolve(DIR, '..', 'uig.jsonl');
+const uigIssues = [];
+let uigRowCount = 0;
+let uigUniqueKeys = 0;
+if (fs.existsSync(UIG_PATH)) {
+  const raw = fs.readFileSync(UIG_PATH, 'utf8').trim().split('\n').filter(Boolean);
+  uigRowCount = raw.length;
+  // Newest-wins per (page, scope, role, name).
+  const latest = new Map();
+  for (const line of raw) {
+    let row;
+    try { row = JSON.parse(line); } catch { continue; }
+    const key = `${row.page}\t${row.scope}\t${row.role}\t${row.name}`;
+    const prev = latest.get(key);
+    if (!prev || (row.observedAt || '') > (prev.observedAt || '')) latest.set(key, row);
+  }
+  uigUniqueKeys = latest.size;
+  // Group by (page, scope, role, name) — collisions across slugs/observations
+  // are flagged. uniqueInScope=false signals the snapshot saw two peers with
+  // the same identifying tuple in one observation.
+  const collisions = [];
+  for (const r of latest.values()) {
+    if (r.uniqueInScope === false) {
+      collisions.push(`${r.page} scope=${r.scope} role=${r.role} name="${r.name}" — non-unique within scope`);
+    }
+  }
+  if (collisions.length) {
+    uigIssues.push(...collisions.slice(0, 20));
+    if (collisions.length > 20) uigIssues.push(`... and ${collisions.length - 20} more`);
+  }
+}
+
+if (uigRowCount > 0) {
+  console.log(`  UIG: ${uigRowCount} rows, ${uigUniqueKeys} unique (page,scope,role,name) tuples`);
+}
+
+if (issues.length || uigIssues.length) {
+  if (issues.length) {
+    console.error(`\n❌ ${issues.length} fidelity issues:`);
+    issues.forEach(i => console.error(`   ${i}`));
+  }
+  if (uigIssues.length) {
+    console.error(`\n❌ ${uigIssues.length} UIG uniqueness issues — refine scope or rename:`);
+    uigIssues.forEach(i => console.error(`   ${i}`));
+  }
   process.exit(1);
 }
 
-console.log(`\n✅ All ${files.length} snapshots pass fidelity check`);
+console.log(`\n✅ All ${files.length} snapshots pass fidelity check${uigRowCount ? ' + UIG uniqueness' : ''}`);
