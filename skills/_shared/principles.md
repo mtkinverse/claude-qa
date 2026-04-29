@@ -86,6 +86,35 @@ Each platform skill maps this hierarchy onto its tool's API.
 - Update a helper → append a new entry to `qa/decisions.md` explaining what changed and why.
 - Never write a script without a fallback path baked in.
 
+### `page.accessibility` is removed — use `page.locator('body').ariaSnapshot()`
+
+`page.accessibility.snapshot()` was removed in Playwright ≥1.49. Any script that calls it will throw `Cannot read properties of undefined (reading 'snapshot')`. Always use:
+
+```javascript
+const aria = await page.locator('body').ariaSnapshot().catch(() => null);
+```
+
+This applies to `snapshot-page.js` and every helper that reads the ARIA tree. The template at `skills/web/templates/snapshot-page.js` is the canonical source — copy it fresh each session; do not hand-write `page.accessibility` calls.
+
+---
+
+### Never inline scripts with `node -e "..."`
+
+Always write scripts to a file and run with `node <file>`. Inline `node -e "..."` with double quotes causes bash to expand `$$` as the current PID — `page.$$eval` becomes `page.12345eval`, breaking the script.
+
+```bash
+# WRONG — $$ gets expanded by bash
+node -e "const x = page.$$eval(...)"
+
+# CORRECT — write to file first
+cat > /tmp/probe.js << 'EOF'
+const x = await page.$$eval(...)
+EOF
+node probe.js
+```
+
+The heredoc `<< 'EOF'` (quoted) prevents all variable expansion. Use it for every multi-line script write.
+
 ## 9. Bypass Detection — Universal, Dynamic, Never Skip
 
 Before clicking **any non-primary element** inside a wizard, onboarding, setup, or modal context, run the bypass classifier:
@@ -122,7 +151,7 @@ If the user has explicitly answered the pending question with "Click this bypass
 
 ## 10. Engagement Protocol — Never Terminate Silently
 
-See `skills/_shared/engagement-protocol.md`. Every blocker — missing dep, missing env var, failed login, locked workspace — surfaces to the user with at least two options (fix-and-retry / skip-and-continue). `throw` and `process.exit(1)` in runtime scripts are forbidden; use the file-based `askUser` handshake instead.
+See `skills/_shared/runtime.md`. Every blocker — missing dep, missing env var, failed login, locked workspace — surfaces to the user with at least two options (fix-and-retry / skip-and-continue). `throw` and `process.exit(1)` in runtime scripts are forbidden; use the file-based `askUser` handshake instead.
 
 ## 11. Headless Toggle — Single Pattern
 

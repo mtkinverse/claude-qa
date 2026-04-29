@@ -20,7 +20,7 @@ platform: web
 
 ## Tracing Loop Contract
 
-When tracing flows (post-exploration), the agent drives each flow via its `qa/flows/F-NNN-*/manifest.jsonl` until every line reaches a terminal `status`. See `skills/_shared/engagement-protocol.md` → **End-to-End Completion is Mandatory**.
+When tracing flows (post-exploration), the agent drives each flow via its `qa/flows/F-NNN-*/manifest.jsonl` until every line reaches a terminal `status`. See `skills/_shared/runtime.md` → **End-to-End Completion is Mandatory**.
 
 ```
 while (line = first `pending` in manifest.jsonl):

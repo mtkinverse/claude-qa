@@ -24,7 +24,7 @@ platform: web
 
 ## Tracing Loop Contract
 
-When tracing flows derived from sitemap entries, each flow is driven by its `qa/flows/F-NNN-*/manifest.jsonl` until every line reaches terminal `status`. See `skills/_shared/engagement-protocol.md` → **End-to-End Completion is Mandatory**.
+When tracing flows derived from sitemap entries, each flow is driven by its `qa/flows/F-NNN-*/manifest.jsonl` until every line reaches terminal `status`. See `skills/_shared/runtime.md` → **End-to-End Completion is Mandatory**.
 
 ```
 while (line = first `pending` in manifest.jsonl):
