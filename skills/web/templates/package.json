@@ -1,0 +1,15 @@
+{
+  "name": "qa-suite",
+  "private": true,
+  "scripts": {
+    "test": "node run.js",
+    "test:standalone": "node run.js --suite standalone",
+    "test:journeys": "node run.js --suite journeys",
+    "test:flow": "node run.js --flow",
+    "test:journey": "node run.js --journey"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.44.0",
+    "dotenv": "^16.0.0"
+  }
+}
