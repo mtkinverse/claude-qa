@@ -139,7 +139,72 @@ if (uigRowCount > 0) {
   console.log(`  UIG: ${uigRowCount} rows, ${uigUniqueKeys} unique (page,scope,role,name) tuples`);
 }
 
-if (issues.length || uigIssues.length) {
+// ── ui-inventory.md schema gate (D2) ────────────────────────────────────────
+// The numeric evidence schema is required so frontier-gate.js can enforce the
+// actuate-and-observe contract (principles.md §5b). Audit checks:
+//   1. The header row contains all 10 required columns.
+//   2. Every data row parses as 8 integers in the count columns.
+//   3. No row has all-zero counts when the same page's snapshot has interactables.
+const INVENTORY_PATH = path.resolve(DIR, '..', 'ui-inventory.md');
+const inventoryIssues = [];
+if (fs.existsSync(INVENTORY_PATH)) {
+  const inv = fs.readFileSync(INVENTORY_PATH, 'utf8');
+  const REQUIRED_COLS = ['url', 'snapshot', 'links_found', 'links_followed', 'inputs_filled',
+                         'buttons_clicked', 'modals_opened', 'modals_submitted',
+                         'dropdowns_expanded', 'new_states_revealed'];
+  const headerLine = inv.split('\n').find(l => /^\| *url *\|/i.test(l));
+  if (!headerLine) {
+    inventoryIssues.push('ui-inventory.md: missing required header row with the D2 numeric schema');
+  } else {
+    const cols = headerLine.split('|').map(c => c.trim().toLowerCase()).filter(Boolean);
+    for (const c of REQUIRED_COLS) {
+      if (!cols.includes(c)) inventoryIssues.push(`ui-inventory.md: missing column "${c}" (D2 schema)`);
+    }
+  }
+
+  // Cross-check: each snapshot file should have a corresponding row.
+  const ROW_RE = /^\| *([^|]+?) *\| *([^|]+?) *\| *(\d+) *\| *(\d+) *\| *(\d+) *\| *(\d+) *\| *(\d+) *\| *(\d+) *\| *(\d+) *\| *(\d+) *\|$/;
+  const invRows = inv.split('\n').map(l => l.match(ROW_RE)).filter(Boolean);
+  const invSnapshots = new Set(invRows.map(m => m[2].trim()));
+
+  for (const f of files) {
+    const s = JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8'));
+    const snapshotName = f;
+    if (!invSnapshots.has(snapshotName) && !invSnapshots.has(snapshotName.replace(/\.snapshot\.json$/, ''))) {
+      // Allow either the full filename or the slug to match.
+      // No issue here yet — coverage-check is the dedicated gate for "every snapshot in inventory."
+      continue;
+    }
+  }
+
+  // All-zero rows where snapshot has interactables = D2 violation.
+  for (const m of invRows) {
+    const url = m[1].trim();
+    const snapshotRef = m[2].trim();
+    const counts = m.slice(3).map(Number);
+    const allZero = counts.every(n => n === 0);
+    if (!allZero) continue;
+    // Cross-reference snapshot — does it actually have interactables?
+    const snapFile = files.find(f => f === snapshotRef || f.startsWith(snapshotRef.replace(/\.snapshot\.json$/, '')));
+    if (!snapFile) continue;
+    try {
+      const s = JSON.parse(fs.readFileSync(path.join(DIR, snapFile), 'utf8'));
+      const dom = s.dom || {};
+      const interactables = (dom.buttons || []).length + (dom.links || []).length + (dom.inputs || []).length;
+      if (interactables > 0) {
+        inventoryIssues.push(`ui-inventory.md: ${url} has all-zero D2 counts but snapshot has ${interactables} interactables — page was visited but never actuated (principles.md §5b)`);
+      }
+    } catch {}
+  }
+}
+
+if (inventoryIssues.length) {
+  console.error(`\n❌ ${inventoryIssues.length} ui-inventory.md schema issues (D2 — per-page evidence schema):`);
+  inventoryIssues.slice(0, 20).forEach(i => console.error(`   ${i}`));
+  if (inventoryIssues.length > 20) console.error(`   ... and ${inventoryIssues.length - 20} more`);
+}
+
+if (issues.length || uigIssues.length || inventoryIssues.length) {
   if (issues.length) {
     console.error(`\n❌ ${issues.length} fidelity issues:`);
     issues.forEach(i => console.error(`   ${i}`));
@@ -148,6 +213,7 @@ if (issues.length || uigIssues.length) {
     console.error(`\n❌ ${uigIssues.length} UIG uniqueness issues — refine scope or rename:`);
     uigIssues.forEach(i => console.error(`   ${i}`));
   }
+  // inventoryIssues already printed above
   process.exit(1);
 }
 

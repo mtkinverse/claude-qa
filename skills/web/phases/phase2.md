@@ -16,11 +16,11 @@ Runtime rules — see `skills/_shared/runtime.md`.
 ```bash
 node scripts/audit-snapshots.js   # snapshot fidelity
 node scripts/coverage-check.js    # every snapshot is in ui-inventory + a flow
-node scripts/crawl-gate.js        # zero ⬜ pending, zero 🔄 active, every ⛔ has a reason
+node scripts/frontier-gate.js     # frontier closure: pending=0, actuation>=90%, modals submitted, retries logged
 ```
 
 Any non-zero exit → return to Phase 1. Specifically:
-- `crawl-gate.js` failing means Phase 1 was exited prematurely. Resume the deep-exploration loop in `phase1.md` step 3 ("Autonomous deep-exploration"), drain every `⬜ pending` URL, then re-run the gate.
+- `frontier-gate.js` failing means Phase 1 was exited prematurely. The gate enforces frontier closure (pending URLs, retry attempts on skipped URLs, per-page actuation coverage, modal-submission coverage, discovery floor, ceiling justification). Resume the deep-exploration loop in `phase1.md` step 3, fill the missing actuation, and re-run the gate.
 - Do not "skip" the gate by editing `crawl-todo.md` directly. Either explore the URL or mark it skipped via `update-crawl-todo.js --mark-skipped <url> --reason "<why>"`.
 
 This precondition exists because scenarios authored against incomplete coverage produce silent gaps — the agent cannot test what it never discovered.

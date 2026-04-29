@@ -104,49 +104,44 @@ Auto-install only on explicit consent. Append every preflight outcome to `qa/dec
 
 ---
 
-## Step W-2: Exploration Strategy — Pick, Log, Execute, Fallback
+## Step W-2: Exploration — BFS with on-demand helpers
 
-> ⚠️ Strategies under `skills/web/strategies/` are EXAMPLES, NOT MANDATES. Deviate based on the app's character, but: (1) log the deviation in `qa/decisions.md` with rationale, (2) declare a fallback. See `skills/_shared/fallback-discipline.md`.
+> ⛔ **There is no strategy-selection step.** BFS is the only strategy. Read `skills/web/strategies/README.md` once for context — it is an index of helpers BFS calls, not a menu to pick from.
 
-### W-2.1 — Read the fingerprint
+### W-2.1 — Read the fingerprint (context only, not for strategy choice)
 
-Read `qa/platform-fingerprint.md`. Q3 (app category) and Q4 (audience) drive the choice.
+Read `qa/platform-fingerprint.md`. The fingerprint informs *runtime parameters* (e.g. seeding sitemap-spot-check for content-heavy sites, expected post-gate URL pattern for auth-bootstrap), not strategy selection.
 
-### W-2.2 — Selection rubric (`skills/web/strategies/README.md`)
+### W-2.2 — Helpers BFS may invoke
 
-| Fingerprint Q3 | Starting strategy | Declared fallback |
-|---|---|---|
-| Dashboard / multi-page / mixed | `bfs.md` (default) | Direct-URL probing → sitemap-spot-check |
-| Onboarding-heavy / Transactional / Wizard | `targeted-trace.md` | Skip + continue → BFS after 3 stalls |
-| Content / CMS / Marketing / Docs | `sitemap-spot-check.md` | BFS with `QA_MAX_DEPTH=2` |
-| **Mixed: public funnel + post-login multi-panel app** | **Two-phase**: targeted-trace for the signup/onboarding funnel → BFS for the authenticated dashboard | BFS if targeted-trace stalls before reaching post-login state |
-| Something else | Custom — document in `qa/decisions.md` | |
+| Helper | When BFS invokes it |
+|---|---|
+| `auth-bootstrap` (file: `strategies/targeted-trace.md`, kept for compatibility) | A sign-up / login / onboarding wall blocks reachability of the post-gate surface. Helper drives the persona path past the gate, saves `storageState`, returns. BFS resumes. |
+| `sitemap-spot-check` (file: `strategies/sitemap-spot-check.md`) | Same content fingerprint observed on > 30% of visited pages — breadth crawling adds no signal. Helper samples N URLs per template group, then BFS resumes on returned URLs. |
+| `wiggle-pass` (file: `templates/wiggle-pass.js`) | A disabled control is observed on the critical path — helper toggles enabled siblings to learn its preconditions, writes them to `uig.jsonl`. |
+| `credential-fanout` (file: `helpers/credential-fanout.md`) | Any input field on any page matches a credential type registered in `.env.qa` — helper auto-fills and submits. |
 
-**Mixed-app detection rule**: if the fingerprint shows BOTH a public marketing/onboarding funnel AND an authenticated multi-panel dashboard (Q3 contains signals from two rows above), select the two-phase approach. Run targeted-trace first to reach the authenticated state and save `storageState`. Then immediately switch to BFS, loading the saved `storageState`, to explore the full post-login surface. Log both phases in `qa/decisions.md` as a single strategy entry.
+Numeric escalation thresholds (when each helper fires) live in `skills/web/helpers/escalation-triggers.md`. Read it once.
 
-### W-2.3 — Log the choice
+### W-2.3 — Log helper invocations (not strategy choices)
 
-Append to `qa/decisions.md`:
+Do **not** write `## Strategy chosen` entries. When BFS calls a helper, append:
 
 ```markdown
-## YYYY-MM-DD HH:MM — Strategy chosen
-**Strategy**: <bfs | targeted-trace | sitemap-spot-check | custom>
-**Why**: <2-3 sentences citing fingerprint Q1-Q4>
-**Fallback**: <named alternative + when to switch>
-**Runtime helper**: qa/scripts/<strategy>.js
+## YYYY-MM-DD HH:MM — <helper-name> invoked
+**Trigger**: <numeric threshold or observation that fired the helper>
+**Result**: <outcome — e.g. storageState saved, N URLs sampled, preconditions discovered>
 ```
 
-### W-2.4 — Write the runtime helper
+### W-2.4 — Write `qa/scripts/explore.js`
 
-Copy the chosen strategy's skeleton into `qa/scripts/<strategy>.js`. Adapt selectors/wait heuristics to the fingerprint probe. Header comment is mandatory:
+Always copy `bfs.md`'s skeleton into `qa/scripts/explore.js` (no dispatcher needed — there is no choice). The skeleton already calls `auth-bootstrap`, `sitemap-spot-check`, `wiggle-pass`, and `credential-fanout` on the conditions defined in `escalation-triggers.md`. Header comment is mandatory:
 
 ```javascript
-// Why: <reason>
-// Strategy: <name — see skills/web/strategies/<name>.md>
-// Fallback: <different code path, not retry>
+// Why: BFS exploration with on-demand helpers (auth-bootstrap, sitemap-spot-check, wiggle-pass, credential-fanout).
+// Strategy: BFS — see skills/web/strategies/bfs.md
+// Helpers: invoked by escalation triggers in skills/web/helpers/escalation-triggers.md
 ```
-
-Also write `qa/scripts/explore.js` as a dispatcher that `require()`s the chosen helper.
 
 ### W-2.5 — Execute + DOM/ARIA snapshot + analyze
 
@@ -195,10 +190,28 @@ For every page/step — **no image reading, no `Read` on PNGs**:
 
 Shared session artefacts (all strategies):
 - `qa/knowledgebase/aria-snapshots/*.snapshot.json` — per visited state
-- `qa/knowledgebase/ui-inventory.md` — page inventory (url, title, fingerprint, snapshot file, auth-gated?)
+- `qa/knowledgebase/ui-inventory.md` — page inventory with per-page actuation counts (D2 schema below). Replaces the older prose-style table — frontier-gate.js reads numeric columns directly.
+
+  **Required schema (every page, every visit)**:
+  ```
+  | url | snapshot | links_found | links_followed | inputs_filled | buttons_clicked | modals_opened | modals_submitted | dropdowns_expanded | new_states_revealed |
+  |-----|----------|------------:|---------------:|--------------:|----------------:|--------------:|-----------------:|-------------------:|---------------------:|
+  | https://app/dashboard | dashboard.snapshot.json | 14 | 12 | 0 | 5 | 1 | 1 | 2 | 3 |
+  ```
+
+  - **links_found**: count of `<a href>` discovered in this snapshot (from `dom.links` + `urlHarvest`).
+  - **links_followed**: count of those links that are now ✅ explored or ⛔ skipped in `crawl-todo.md`.
+  - **inputs_filled**: count of input/select fields actually filled (by credential-fanout or by BFS form actuation).
+  - **buttons_clicked**: count of safe-list buttons clicked during BFS interaction (excludes destructive buttons).
+  - **modals_opened**: count of modals/dialogs opened during BFS interaction.
+  - **modals_submitted**: count of opened modals where the primary action was submitted (per `principles.md` §5b).
+  - **dropdowns_expanded**: count of `<select>` / `[role=combobox]` opened and at least one option enumerated.
+  - **new_states_revealed**: count of new UIG rows or crawl-todo entries this page contributed.
+
+  Numbers, not prose. Prose annotations belong in `flow.md` discovery evidence, not here. Pages with all-zero columns (other than vacuously-empty pages with no interactables) fail `frontier-gate.js`.
 - `qa/knowledgebase/nav-graph.md` — every outbound link from `dom.links`
 - `qa/knowledgebase/crawl-todo.md` — **persistent URL coverage tracker**, append-only, never overwritten
-- `qa/crawl-state.json` (BFS) / `qa/trace-state.json` (targeted) / `qa/sitemap-groups.json` (sitemap) — auto-saved per page; mid-strategy resume is free.
+- `qa/crawl-state.json` — BFS frontier state, auto-saved per page; resume is free. Helper invocations write their own state files (`qa/.auth/<role>.json`, `qa/sitemap-groups.json`) but do not own the frontier.
 
 ### W-2.6 — Credential gate protocol (all strategies)
 
@@ -454,10 +467,10 @@ node scripts/audit-snapshots.js
 node scripts/coverage-check.js
 
 # Crawl gate — zero ⬜ pending, zero 🔄 in-progress, every ⛔ skipped has a reason
-node scripts/crawl-gate.js
+node scripts/frontier-gate.js
 ```
 
-If `crawl-gate.js` fails: do NOT proceed. Either explore each pending URL via the deep-exploration loop (step 3 below), or mark it `⛔ skipped` with an explicit reason via `update-crawl-todo.js --mark-skipped <url> --reason "<why>"`. Pending is never a terminal state.
+If `frontier-gate.js` fails: do NOT proceed. The gate fails when URLs are pending, when skipped URLs lack 2+ retry attempts logged in `decisions.md` (3-strike protocol), when any visited page has actuation coverage < 90% (principles.md §5b), when modal triggers were detected but never submitted, when total discovery is below the floor without justification, or when `QA_MAX_PAGES`/`QA_MAX_DEPTH` was hit without a documented decision. Resume the deep-exploration loop, fill the missing actuation, and re-run the gate. Pending and shallow-actuation are never terminal states.
 
 If `audit-snapshots.js` fails: re-capture any degenerate page (use the inspector to see what actually got recorded — `node scripts/inspect-snapshot.js <slug>`).
 

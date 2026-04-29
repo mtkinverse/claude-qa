@@ -1,86 +1,52 @@
 ---
 name: web-strategies-index
-description: Index + selection rubric for web exploration strategies. Read fingerprint, pick a strategy, declare its fallback before executing.
+description: BFS is the single web exploration strategy. Other files in this directory are helpers BFS calls on demand.
 type: reference
 platform: web
 ---
 
-# Web Exploration Strategies — Index & Selection Rubric
+# Web Exploration — One Strategy, Plus Helpers
 
-> ⚠️ **THESE ARE EXAMPLES AND PREFERRED SUGGESTIONS — NOT MANDATES.**
-> You may deviate based on the observed app character, but you MUST:
-> 1. Log the deviation in `qa/decisions.md` with rationale.
-> 2. Declare a fallback. If your chosen approach stalls, fall back and continue — never break the flow.
+> ⛔ **There is one exploration strategy: BFS.** Everything else in this directory is a helper that BFS calls on demand. There is no strategy-selection step — Phase 1 always runs BFS.
 
----
-
-## Available Strategies
-
-| File | Strategy | Best for | Default fallback |
-|---|---|---|---|
-| [bfs.md](bfs.md) | Breadth-First Crawl | Dashboard / multi-page apps with rich nav | Direct-URL probing → sitemap-spot-check |
-| [targeted-trace.md](targeted-trace.md) | Linear persona path | Onboarding / wizard / transactional flows | Skip step + continue → BFS after 3 stalls |
-| [sitemap-spot-check.md](sitemap-spot-check.md) | Sample N URLs per template group | Content / CMS / marketing / docs | BFS with `QA_MAX_DEPTH=2` |
-
-You may also write a **custom** strategy if none fit. Document it in `qa/decisions.md` with rationale and fallback.
+This collapse exists because picking between peer strategies was a recurring failure mode: Phase 1 would pick `targeted-trace`, walk the linear path, and exit with 15 URLs covered while the post-login surface sat unexplored. BFS, with the helpers below, handles every app shape.
 
 ---
 
-## Selection Rubric (read fingerprint Q1–Q4)
+## Files in this directory
 
-```
-Q3 = Onboarding-heavy or Transactional?
-  → start with TARGETED-TRACE
-  → fallback: skip+continue → BFS after 3 stalls
+| File | Role | Invoked when |
+|---|---|---|
+| [bfs.md](bfs.md) | **The strategy.** Breadth-first crawl driven by frontier closure (URLs + interactions + states). | Always — runs from Phase 1 start. |
+| [targeted-trace.md](targeted-trace.md) | **`auth-bootstrap` helper.** Drives a scripted persona path past sign-up / onboarding walls and returns `storageState`. | BFS hits a credential / onboarding gate it cannot traverse autonomously. |
+| [sitemap-spot-check.md](sitemap-spot-check.md) | **Content-sweep helper.** Reads `/sitemap.xml`, samples N URLs per template group. | BFS detects a content/CMS surface (same fingerprint > 30% of pages) where breadth crawling adds no signal. |
 
-Q3 = Content?
-  → start with SITEMAP-SPOT-CHECK
-  → fallback: BFS with QA_MAX_DEPTH=2
-
-Q3 = Dashboard?  (or Mixed with dashboard dominant)
-  → start with BFS
-  → fallback: direct-URL probing → sitemap-spot-check
-
-Q1 = pure native (CLI, native shell)?
-  → none of these apply — see your platform's strategies dir
-```
+The historical `name` field in `targeted-trace.md` may still read `web-strategy-targeted-trace` — that's now a helper id, not a peer-strategy declaration. The semantics have changed; the filename is preserved only to avoid breaking references in `bfs.md`, `trace-recorder.js`, and existing workspaces.
 
 ---
 
-## Required Outputs Before Executing
+## Selection — there is no selection
 
-Before running ANY strategy, the platform skill must:
+Phase 1 starts BFS. BFS calls `auth-bootstrap` when it needs to log in. BFS calls `sitemap-spot-check` when discovery is repetitive. Phase 1 cannot exit until the BFS frontier is closed (see `scripts/frontier-gate.js`).
 
-1. **Confirm fingerprint exists** (`qa/platform-fingerprint.md`) — created in root SKILL.md Step 3.5.
-2. **Log the choice** in `qa/decisions.md` using this format:
+Do **not** write `## Strategy chosen` entries in `qa/decisions.md`. Log helper invocations instead:
 
 ```markdown
-## YYYY-MM-DD HH:MM — Strategy chosen
-**Strategy**: <bfs | targeted-trace | sitemap-spot-check | custom>
-**Why**: <2-3 sentences citing fingerprint Q1-Q4 answers>
-**Fallback**: <named alternative + when to switch>
-**Runtime helper**: qa/scripts/<strategy>.js
-```
-
-3. **Write the runtime helper** to `qa/scripts/<strategy>.js` — copy the code skeleton from the chosen strategy file, adapt selectors/heuristics to what observed in the fingerprint probe screenshot.
-
-4. **Add the helper's header comment**:
-
-```javascript
-// Why: <reason this script exists>
-// Strategy: <name from this file>
-// Fallback: <what to do if this script stalls — different code path, not retry>
+## YYYY-MM-DD HH:MM — auth-bootstrap invoked
+**Trigger**: BFS encountered sign-up form at /account
+**Result**: storageState saved to qa/.auth/user.json; BFS resumed at /dashboard
 ```
 
 ---
 
-## When to Switch Strategies Mid-Run
+## When to deviate
 
-Watch for the stall signals listed in each strategy file. When you see one:
+You may write a **custom** runtime script if the app shape is genuinely outside the helper set. Document it in `qa/decisions.md` with rationale and the frontier-closure check it satisfies. The frontier gate (`scripts/frontier-gate.js`) is the contract — any custom script must produce a frontier the gate accepts.
 
-1. Stop the current strategy cleanly (do NOT crash — finish current iteration).
-2. Append a `qa/decisions.md` entry: `"Switching from <X> to <Y> because <stall signal>."`
-3. Update or replace `qa/scripts/explore.js` with the new strategy's helper.
-4. Resume from where you left off — the new strategy uses the same `qa/state.md` + `qa/crawl-state.json` (if compatible) so progress isn't lost.
+---
 
-**The flow never breaks.** A stall means switch, not stop.
+## Switching helpers mid-run
+
+There is no "strategy switch." BFS is the strategy; helpers are called as needed. If `auth-bootstrap` stalls (3 consecutive no-change steps), it returns control to BFS with `gate-unresolved=true` and BFS records the gate as a `⛔ skipped` URL with a 3-strike retry log.
+
+**The flow never breaks.** A stall in a helper means BFS records and continues, not that exploration stops.

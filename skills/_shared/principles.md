@@ -61,6 +61,64 @@ Order of preference when locating UI elements (applies to any tool):
 
 Each platform skill maps this hierarchy onto its tool's API.
 
+## 5b. Actuate-and-Observe — The Core Discovery Contract
+
+> ⛔ **Snapshots are seeds for actuation, not deliverables.** Every interactive element on every visited page MUST be actuated and the outcome classified. "Snapshotted, moved on" is the bug we are eliminating.
+
+The historical framing — *"reveal hidden content for link discovery only"* — produced shallow runs: dropdowns opened to enumerate options but never selected, modals captured as probes but never submitted, icon-only buttons ignored because they had no `href`. That framing is replaced by this contract.
+
+### The contract — every page, every visit
+
+For each interactable in the snapshot, the agent (or its runtime helper) MUST perform the listed actuation and classify the outcome via `qa/scripts/outcome-classifier.js`. The outcome is recorded in `uig.jsonl` (`effect` field), in the page's evidence row in `ui-inventory.md`, and in `trace.jsonl`.
+
+| Element class | Actuation | Pass evidence (any of) | Failure evidence |
+|---|---|---|---|
+| **Form (standalone, with inputs matched by `credential-fanout`)** | Fill from `.env.qa` → submit | `new-url` / `success-toast` / `modal-opened` | `error-surfaced` / `auth-rejected-server` / `form-reset-silent` (all recorded; not stalls) |
+| **Modal trigger button** (opens `[role=dialog]` / overlay) | Click → if modal contains inputs, fill from `.env.qa` → submit. If `.env.qa` lacks values, snapshot the open modal and close. | Modal opened + (submit-success OR submit-error OR snapshot-only-with-reason) | `no-change` after click |
+| **Dropdown / `[role=combobox]` / `<select>`** | Open → enumerate options → select first non-default option (record selection in `uig.jsonl`) → snapshot resulting state | Options listed, selection applied, no console error | Empty options list (record as `dropdown-empty`) |
+| **Tab / `[role=tab]` / accordion summary** | Activate → snapshot revealed pane → enqueue revealed interactables for their own actuation pass | Revealed pane appended to `uig.jsonl` with parent scope | Pane reveals nothing new (record as `tab-empty`) |
+| **Icon-only header / sidebar button** (avatar, bell, kebab, gear) | Click → snapshot revealed menu → enqueue menu items as new states | Menu items added to `uig.jsonl`; menu URL/state added to `crawl-todo.md` | `no-change` (record + skip) |
+| **Disabled control** | Call `wiggle-pass.js` to discover preconditions before moving on (do not click). | Preconditions written to `uig.jsonl` | No precondition discovered (record as `wiggle-stalled`) |
+| **Anchor `<a href>` / `[role=link]` (internal)** | Add target to BFS queue (no click required during this pass — BFS visits it later) | URL appended to `crawl-todo.md` | Dead/external link (record as `link-skipped`) |
+| **Button on safe-list (destructive: delete, remove, sign-out, cancel-subscription)** | DO NOT click during BFS. Record presence in `uig.jsonl`; defer to Phase 2 scenario authoring. | Recorded with `safe-skip` reason | — |
+
+### What counts as actuation
+
+Actuation is *one attempt to drive the element to its expected effect*, then classify the result. It is not "click and hope." Specifically:
+
+- A form is not "actuated" by clicking submit on an empty form. It is actuated by filling all detected inputs (using `credential-fanout`) and then submitting. If a required input has no matching credential, snapshot the populated-where-possible form, record `inputs_filled / inputs_detected` ratio in the evidence row, and mark the actuation `partial`.
+- A modal is not "actuated" by opening it. It is actuated by exercising the primary action inside (submit / confirm / save). Open-and-close-without-submit is recorded as `modal-snapshot-only` with a reason (`no-credentials` / `destructive` / `safe-list`).
+- A dropdown is not "actuated" by being snapshotted while closed. It is actuated by being opened, options enumerated, and one option selected.
+
+### Outcome classification — every actuation
+
+Every actuation MUST call `outcome-classifier.js` and record the returned label. Pass labels:
+- `new-url` — page navigated
+- `new-modal` — overlay appeared
+- `new-panel` — in-page region appeared/changed (tab, accordion, modal-step-2)
+- `success-toast` — `[role=alert]` / `[role=status]` with success text
+- `error-surfaced` — explicit error displayed (still a pass — error states are coverage)
+- `form-reset-silent` — form cleared without server response (record + escalate per `fallback-discipline.md`)
+
+Fail label:
+- `no-change` — increments `consecutiveStalls`. Three consecutive `no-change` events in the same flow → switch path per `fallback-discipline.md` (BFS → 3-strike retry; auth-bootstrap → return `gate-unresolved`).
+
+### Evidence — auditable, numeric, per page
+
+Every page row in `qa/knowledgebase/ui-inventory.md` MUST include columns:
+
+```
+| url | snapshot | links_found | links_followed | inputs_filled | buttons_clicked | modals_opened | modals_submitted | dropdowns_expanded | new_states_revealed |
+```
+
+Numbers, not prose. The frontier gate (`scripts/frontier-gate.js`) reads these columns to decide whether the page was genuinely actuated. The audit step (`scripts/audit-snapshots.js`) fails if the schema is missing or values are zero where they shouldn't be.
+
+### Why not "click everything blindly"
+
+The contract scopes actuation to the snapshot's typed interactables, gates destructive actions through the safe-list, and routes auth through `login-engage.js`. It is exhaustive over visible interactables, not over arbitrary DOM elements. The cost is bounded by what the page actually exposes to a real user.
+
+---
+
 ## 6. Discovery Snapshot Protocol
 
 **Web platform**: Discovery uses DOM/ARIA snapshots — not screenshots.

@@ -1,77 +1,69 @@
 ---
-name: web-strategy-targeted-trace
-description: Linear persona-path trace for onboarding-heavy / wizard-style web apps. Single-thread depth-first, no breadth fan-out.
-type: strategy
+name: web-helper-auth-bootstrap
+description: Helper invoked by BFS when exploration hits a sign-up / login / onboarding wall. Drives the scripted persona path past the gate, saves storageState, returns control to BFS.
+type: helper
 platform: web
 ---
 
-# Strategy — Targeted Trace
+# Helper — Auth Bootstrap (formerly "targeted-trace")
 
-> ⚠️ **THIS IS AN EXAMPLE AND PREFERRED SUGGESTION — NOT A MANDATE.**
-> You may deviate based on the observed app character, but you MUST:
-> 1. Log the deviation in `qa/decisions.md` with rationale.
-> 2. Declare a fallback. If your chosen approach stalls, fall back and continue — never break the flow.
+> ⛔ **This is no longer a peer strategy.** BFS is the only strategy. This file exists as a helper BFS invokes when it hits a credential / onboarding wall it cannot traverse autonomously. After the wall is passed, control returns to BFS.
 
-**Best for**: Onboarding-heavy, wizard-style, or transactional apps where the value is in following ONE persona's path step-by-step. BFS would waste effort on shallow nav surfaces; the real product is the funnel.
+The filename `targeted-trace.md` is preserved to avoid breaking `bfs.md`, `trace-recorder.js`, and existing workspace references. The semantics have changed: this is an auth-bootstrap helper, not a strategy.
 
-**When fingerprint says**: Q1=SPA or MPA, Q3=Onboarding-heavy or Transactional, Q4=often B2C signup or B2B trial.
+**Invoked when**: BFS detects a sign-up / login form, an onboarding wizard, or a credential gate that blocks the post-login surface from being reachable by breadth crawling alone.
+
+**Returns**: `qa/.auth/<role>.json` (storageState) and a `gateOutcome` string (`auth-success` | `gate-unresolved`). BFS resumes from the post-gate URL with the storage state loaded.
 
 **Stall signals**: A required step has no actionable element after `QA_PAGE_WAIT_MS * 2` wait; form submit returns no state change; OAuth/SSO redirect required and `.env.qa` lacks the credential.
 
-**Declared fallback**: **Skip the failing step + record skip in `qa/decisions.md` AND in the flow's evidence row, then continue with the next step**. If three consecutive steps fail, switch to **BFS** (`skills/web/strategies/bfs.md`) for at least breadth coverage of the surface.
+**Declared fallback**: Skip the failing step + record skip in `qa/decisions.md`, then continue with the next step. After 3 consecutive no-change steps, return `gate-unresolved` to BFS — BFS records the gate URL as `⛔ skipped` with a 3-strike retry log (`bfs.md` W-2.6).
 
 ---
 
-## Tracing Loop Contract
+## Contract
 
-Each flow is driven by its `qa/flows/F-NNN-*/manifest.jsonl` until every line reaches terminal `status`. See `skills/_shared/runtime.md` → **End-to-End Completion is Mandatory**.
+Auth bootstrap MUST:
+
+1. Run only when BFS calls it (never as a top-level strategy).
+2. Stop the moment the post-gate URL is reached (do NOT continue exploring — that is BFS's job).
+3. Save `storageState` to `qa/.auth/<role>.json` before returning.
+4. Append one entry to `qa/decisions.md` recording the gate, the path taken, and the outcome.
+5. Never click bypass buttons (see `principles.md` §9 — bypass detection is universal).
+6. Use credentials from `.env.qa` only — never hardcode.
+7. On `signup` returning `alreadyExists=true`, set the session-wide signup-once flag and switch permanently to login (see `helpers/login-engage.md` C2 guard).
+
+---
+
+## Loop Contract
+
+Driven by `qa/flows/F-NNN-*/manifest.jsonl` until the manifest's terminal step is reached OR the post-gate URL is reached, whichever is first.
 
 ```
-while (line = first `pending` in manifest.jsonl):
+while (line = first `pending` in manifest.jsonl) AND not at post-gate URL:
   execute line.action on line.target     // click selector; goto only for seed/resume
   outcome = classify(page, before, buf)  // outcome-classifier.js
-  append 1 line to qa/progress.jsonl      // ≤150 bytes
+  recorder.interaction({...})            // append to trace.jsonl
   update manifest.jsonl line.status = done | skipped(reason) | blocked(reason)
+  if at post-gate URL:
+    save storageState; return { gateOutcome: 'auth-success' }
+  if 3 consecutive no-change:
+    return { gateOutcome: 'gate-unresolved' }
   if outcome in {error-surfaced, auth-rejected-server, form-reset-silent, network-timeout}:
-    askUser(...); resume loop after answer
-after loop: mark flow TRACED in journey-inventory.md; auto-advance to next PENDING flow
+    askUser(...); resume after answer
 ```
 
 ---
 
-## How It Works
-
-Single-threaded depth-first walk through ONE intended persona path. No queue, no breadth.
-
-### Loop Structure
-
-```
-1. Read fingerprint Q3 + Q4 → identify the dominant persona path (e.g. "new B2C user signs up → completes onboarding → reaches first-value")
-2. Open the entry URL, screenshot, READ
-3. For each step:
-   a. Identify the next actionable element (form, button, wizard control)
-   b. Interact (fill, click, select). Use credentials from .env.qa per the credential gate protocol — never bypass.
-   c. Wait + verify state change (URL change, DOM change, success indicator)
-   d. Screenshot AFTER state change, READ
-   e. Record step in flow.md evidence row with: step number, action taken, screenshot file, observed result
-   f. If state did not change after fallback wait → execute the declared fallback (skip + continue)
-4. Stop when one of:
-   - Reached the target end-state (first-value page, dashboard, success screen)
-   - Three consecutive step failures → switch to BFS
-   - User-defined max-steps reached (default: 20)
-```
-
-### Code Skeleton
+## Code Skeleton
 
 ```javascript
 const fs = require('fs');
 const { chromium } = require('@playwright/test');
 require('dotenv').config({ path: '.env.qa' });
-const { capture } = require('../scripts/qa-screenshot');
 
-// Why: this script is the runtime helper for targeted-trace strategy.
-// Strategy: targeted-trace (skills/web/strategies/targeted-trace.md)
-// Fallback: on 3 consecutive step stalls, switch to BFS — log to qa/decisions.md.
+// Auth-bootstrap helper. Called by BFS when a credential / onboarding wall blocks
+// breadth crawling. Returns storageState + gateOutcome to BFS — does not explore.
 
 const MAX_STEPS = parseInt(process.env.QA_MAX_TRACE_STEPS || '20');
 const PAGE_WAIT_MS = parseInt(process.env.QA_PAGE_WAIT_MS || '2000');
@@ -80,7 +72,6 @@ const browser = await chromium.launch({ headless: process.env.QA_HEADLESS !== 'f
 const context = await browser.newContext();
 const page = await context.newPage();
 
-// Outcome classifier + login engagement + trace + wiggle helpers (see skills/web/templates/)
 const { attachListeners, snapshot, classify } = require('./outcome-classifier.js');
 const { loginEngage } = require('./login-engage.js');
 const { TraceRecorder, uigRef } = require('./trace-recorder.js');
@@ -88,37 +79,47 @@ const { wigglePass } = require('./wiggle-pass.js');
 const { snapshotPage } = require('./snapshot-page.js');
 const buf = attachListeners(context);
 
-// Trace recorder is per-flow. Initialise with the targeted flow's ID.
-// Phase 3 reads the resulting trace.jsonl and transpiles it to scenario code.
-const recorder = new TraceRecorder(process.env.QA_TRACE_FLOW_ID || 'targeted-trace');
+const recorder = new TraceRecorder(process.env.QA_TRACE_FLOW_ID || 'auth-bootstrap');
+const role = process.env.QA_BOOTSTRAP_ROLE || 'member';
+const postGateMatcher = process.env.QA_POST_GATE_URL_PATTERN
+  ? new RegExp(process.env.QA_POST_GATE_URL_PATTERN)
+  : /\/(dashboard|home|app|workspace|onboarding\/complete)/i;
 
 await page.goto(process.env.QA_APP_URL, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(PAGE_WAIT_MS);
 
 let consecutiveStalls = 0;
-const trace = [];
+let gateOutcome = 'gate-unresolved';
 
 for (let step = 1; step <= MAX_STEPS; step++) {
-  // Snapshot pre-interaction state
+  // Exit immediately if post-gate URL reached — BFS resumes from here.
+  if (postGateMatcher.test(page.url())) {
+    gateOutcome = 'auth-success';
+    break;
+  }
+
   const before = await snapshot(page);
   const sinceTs = Date.now();
 
   const nextAction = await findNextAction(page);
-  if (!nextAction) {
-    console.log(`Step ${step}: no actionable element — stopping`);
-    break;
-  }
+  if (!nextAction) break;
 
-  // If next action is a login form, hand off to login-engage (NEVER fill+click directly)
-  if (nextAction.type === 'login') {
-    const role = nextAction.role || 'member';
+  // Login forms: hand off to login-engage (NEVER fill+click directly).
+  // login-engage enforces signup-once: on alreadyExists=true the session
+  // permanently switches to login.
+  if (nextAction.type === 'login' || nextAction.type === 'auth') {
     const result = await loginEngage(page, context, {
       email: process.env[`QA_${role.toUpperCase()}_EMAIL`] || process.env.QA_TEST_EMAIL,
       password: process.env[`QA_${role.toUpperCase()}_PASSWORD`] || process.env.QA_TEST_PASSWORD,
       role,
     });
-    if (result.label !== 'auth-success') break;  // pending-question.md was written; agent re-engages
-    trace.push({ step, action: 'login-engage', label: result.label });
+    if (result.label === 'auth-success') {
+      // Save storageState immediately on auth success — BFS needs it.
+      await context.storageState({ path: `qa/.auth/${role}.json` });
+      gateOutcome = 'auth-success';
+      break;
+    }
+    if (result.label === 'auth-rejected-server' || result.label === 'auth-blocked') break;
     continue;
   }
 
@@ -126,97 +127,55 @@ for (let step = 1; step <= MAX_STEPS; step++) {
   await page.waitForTimeout(PAGE_WAIT_MS);
 
   const outcome = await classify(page, before, buf, { sinceTs });
-  const slug = page.url().split('/').filter(Boolean).pop() || `step-${step}`;
-  const file = `trace-${String(step).padStart(2, '0')}-${slug}.png`;
 
-  // Gated screenshot read: only inline-READ on error / terminal labels
-  const READ_NOW = ['error-surfaced', 'auth-rejected-server', 'form-reset-silent', 'modal-opened', 'network-timeout'];
-  await capture(page, {
-    flow: 'targeted-trace',
-    step,
-    action: nextAction.label || `Step ${step}`,
-    observed: READ_NOW.includes(outcome.label) ? `READ: ${outcome.label}` : `(batch-read pending) ${outcome.label}`,
-    page: slug,
-    file,
-  });
-
-  // Single source of truth for the action trail Phase 3 transpiles from.
   recorder.interaction({
     action: nextAction.kind || 'click',
     uig_ref: nextAction.uig_ref,
     target: nextAction.label,
     outcome: outcome.label,
-    evidence: { url: page.url(), screenshot: file },
+    evidence: { url: page.url() },
   });
 
   if (outcome.label === 'no-change') {
     consecutiveStalls++;
     appendDecision(`Step ${step} no-change: ${nextAction.label}.`);
-    // Wiggle-pass — if the no-change came from clicking a disabled control on
-    // the critical path, learn its preconditions instead of stalling. Generic
-    // mechanism — no per-app patterns.
     if (nextAction.disabled && nextAction.scope) {
       await wigglePass(page, {
-        scope: nextAction.scope,                   // UIG-shape, resolved by scope-resolver.js
+        scope: nextAction.scope,
         disabledTarget: { role: nextAction.role || 'button', name: nextAction.label, exact: true },
-        flowId: process.env.QA_TRACE_FLOW_ID || 'targeted-trace',
+        flowId: process.env.QA_TRACE_FLOW_ID || 'auth-bootstrap',
       }).catch(() => {});
     }
     if (consecutiveStalls >= 3) {
-      appendDecision('Three consecutive no-change — switching to BFS strategy.');
+      appendDecision('Three consecutive no-change — returning gate-unresolved to BFS.');
       break;
     }
     continue;
   }
 
-  if (READ_NOW.includes(outcome.label)) {
-    // Engagement protocol — write a pending-question for the agent to pick up
-    fs.writeFileSync('qa/pending-question.md',
-      '```json\n' + JSON.stringify({ step, label: outcome.label, evidence: outcome.evidence, screenshot: file }, null, 2) + '\n```\n');
-    break;
-  }
-
   consecutiveStalls = 0;
-  trace.push({ step, action: nextAction.label, url: page.url(), file, label: outcome.label });
 }
 
+// Save state regardless of outcome; BFS decides whether to use it.
+await context.storageState({ path: `qa/.auth/${role}.json` }).catch(() => {});
 await browser.close();
 
-// Persist trace summary
-fs.writeFileSync('qa/flows/targeted-trace/trace.json', JSON.stringify(trace, null, 2));
+// Emit the result for the BFS caller. Two channels: stdout JSON + a sentinel file.
+const result = { gateOutcome, role, storageState: `qa/.auth/${role}.json`, lastUrl: page.url() };
+fs.writeFileSync('qa/.auth-bootstrap-result.json', JSON.stringify(result, null, 2));
+console.log(JSON.stringify(result));
 
 function appendDecision(line) {
   const ts = new Date().toISOString();
-  fs.appendFileSync('qa/decisions.md', `\n## ${ts} — targeted-trace\n${line}\n`);
-}
-
-// findNextAction + interact: adapt to the observed app.
-// Default heuristic shown — override based on what you SEE in screenshots.
-async function findNextAction(page) {
-  // 1. Primary CTA (large, prominent button)
-  const cta = page.locator('button[type="submit"], button.primary, [class*="primary"]').first();
-  if (await cta.count() > 0 && await cta.isVisible().catch(() => false)) {
-    return { type: 'click', selector: cta, label: (await cta.textContent() || '').trim() };
-  }
-  // 2. Required form fields → fill from .env.qa via credential gate (skills/web/strategies/bfs.md W-2.6)
-  // 3. Next-step / continue / save link
-  // ... extend per observation
-  return null;
+  fs.appendFileSync('qa/decisions.md', `\n## ${ts} — auth-bootstrap\n${line}\n`);
 }
 ```
 
-### Fallback in Action
+---
 
-The script **never throws**. Every failure path either:
-- Records the skip and continues (single stall)
-- Switches to BFS (three consecutive stalls)
-- Stops at a terminal state (no next action)
+## `findNextAction` — Required Priority Order
 
-In every case, `qa/decisions.md` gets a new entry explaining what happened.
-
-### `findNextAction` — Required Priority Order
-
-The action-finding function MUST check conditions in this exact order. Reversing or reordering causes stall loops (e.g. clicking an unfilled submit button repeatedly instead of filling the form):
+The action-finding function MUST check conditions in this exact order. Reversing causes stall loops.
 
 ```
 1. Auth-page context check (FIRST — before any CTA matching)
@@ -225,36 +184,28 @@ The action-finding function MUST check conditions in this exact order. Reversing
    - This prevents the script from clicking the form's submit button bare-handed.
 
 2. Visible wizard / onboarding "Continue" or "Next" button
-   - Only match if it is ENABLED (not disabled) — disabled means a required selection is missing.
+   - Only match if it is ENABLED (not disabled). Disabled means a precondition
+     is missing — handled by wiggle-pass via the consecutiveStalls path.
 
 3. Required form fields that are empty
-   - Detect via input[required]:not([value]), aria-required inputs
-   - Fill from .env.qa credentials (QA_TEST_EMAIL, QA_TEST_PASSWORD, etc.)
+   - Detect via input[required]:not([value]), aria-required inputs.
+   - Fill from .env.qa via credential-fanout (skills/web/helpers/credential-fanout.md)
+     — every credential type registered in the index, not just email/password.
 
-4. Primary CTA button (sign-up, get-started, etc.)
-   - Only on non-auth pages.
+4. Primary CTA button (sign-up, get-started) — only on non-auth pages.
 
-5. Any visible navigation item not yet visited
-   - Sidebar links, top nav tabs, user menu items.
-   - Mark each as visited after clicking to avoid re-clicking.
+5. Bypass detection (skills/_shared/principles.md §9) — never click these.
 
-6. null — no actionable element found; script exits cleanly.
+6. null — no actionable element; helper exits, BFS resumes.
 ```
 
-### Post-login dashboard coverage — required additional pass
+---
 
-When targeted-trace reaches a post-login dashboard (URL no longer matches the auth page), the funnel portion is complete. At this point:
+## What this helper does NOT do
 
-1. Save `storageState` to `qa/.auth/<role>.json`.
-2. **Do NOT stop.** Enumerate all navigation elements in the dashboard: sidebar links, tab bars, top-nav items, user menu items. Use the DOM/ARIA snapshot (`dom.links`, `dom.buttons` with nav/sidebar roles) to build the list.
-3. Click each nav item once, snapshot the resulting state, register in `crawl-todo.md`.
-4. For each panel: look for secondary actions (modals, expandable sections, sub-tabs) and click them too.
-5. Only stop when all nav items are visited OR a stall signal fires.
+- It does not enumerate sidebar items, click dashboard panels, or open modals on the post-gate surface. **That is BFS's job.** This helper exits the moment the post-gate URL matcher fires.
+- It does not record `## Strategy chosen` entries — there is no strategy choice. It records `## auth-bootstrap invoked` entries instead.
+- It does not perform breadth fan-out. Linear walk only.
+- It does not retry signup after `alreadyExists=true`. The signup-once guard in `login-engage` switches the session permanently to login.
 
-This ensures the post-login surface is covered by targeted-trace even when BFS is not the primary strategy. If the dashboard is too large for a single targeted-trace run, log the decision and switch to BFS with `storageState` loaded.
-
-### Adapt to What You See
-
-After every snapshot READ, if the app exposes interactions the default `findNextAction` heuristic missed (e.g. a custom carousel, a multi-select wizard step, an icon-only nav button), update `qa/scripts/targeted-trace.js` and append a `qa/decisions.md` entry: `"Updated targeted-trace.js: added handler for <X> based on snapshot of step N"`.
-
-**Never navigate to post-login routes via direct `page.goto()` hashes or sub-paths** without first interacting via the UI. Direct goto misses the interactive state of each panel. Always click the nav element, wait for the panel to render, then snapshot.
+If you find yourself extending this helper to "also explore the dashboard" or "also click the sidebar," stop — that work belongs in BFS. Add the missing capability there instead.

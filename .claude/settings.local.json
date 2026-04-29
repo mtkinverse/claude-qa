@@ -33,7 +33,8 @@
       "Bash(curl -sI https://www.paio.bot/ --max-time 10)",
       "Bash(curl -sI https://paioclaw.ai/ --max-time 10)",
       "Bash(sed -i \"s/getByRole\\('button', { name: 'Sign in' }\\)/getByRole\\('button', { name: 'Sign in', exact: true }\\).last\\(\\)/g\" /home/taha/Desktop/claude-mac-qa-skills/qa/flows/F-003-authentication/F-003.scenarios.ts)",
-      "Bash(sed -i \"s/getByRole\\('button', { name: 'Sign up' }\\)/getByRole\\('button', { name: 'Sign up', exact: true }\\).last\\(\\)/g\" /home/taha/Desktop/claude-mac-qa-skills/qa/flows/F-003-authentication/F-003.scenarios.ts)"
+      "Bash(sed -i \"s/getByRole\\('button', { name: 'Sign up' }\\)/getByRole\\('button', { name: 'Sign up', exact: true }\\).last\\(\\)/g\" /home/taha/Desktop/claude-mac-qa-skills/qa/flows/F-003-authentication/F-003.scenarios.ts)",
+      "Bash(node_modules/.bin/playwright *)"
     ]
   }
 }

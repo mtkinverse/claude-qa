@@ -61,10 +61,15 @@ No `TC-NNN-*.md` files anywhere. No `.ts` files before Phase 3.
 | Variable | Default | Purpose |
 |---|---|---|
 | `QA_PAGE_WAIT_MS` | `2000` | Min wait per page before snapshotting |
-| `QA_MAX_PAGES` | `50` | BFS page cap |
-| `QA_MAX_DEPTH` | `5` | Max click-depth from homepage |
+| `QA_MAX_PAGES` | `300` | BFS page cap (raised from 50 — silent ceiling caused shallow runs) |
+| `QA_MAX_DEPTH` | `10` | Max click-depth from homepage (raised from 5) |
 | `QA_NAV_TIMEOUT` | `15000` | `page.goto()` timeout (ms) |
 | `QA_HEADLESS` | `true` | Set `false` to watch the browser |
+| `QA_INTERACTION_DEPTH` | `full` | `full` enforces actuate-and-observe; `links-only` reverts to legacy (not recommended) |
+| `QA_FRONTIER_ACTUATION_FLOOR` | `0.9` | Min ratio of actuated/detected interactables per page (frontier-gate) |
+| `QA_FRONTIER_DISCOVERY_FLOOR` | `8` | Min total URLs discovered before Phase 1 may exit (override with justification) |
+
+**Loud ceiling**: when `QA_MAX_PAGES` or `QA_MAX_DEPTH` is reached with URLs still in the queue, `scripts/frontier-gate.js` fails Phase 1. Either raise the limit and resume, or document the decision in `qa/decisions.md` using the phrase `"ceiling-hit accepted"`. Silent ceiling exits are no longer permitted — the gate enforces this.
 
 ---
 

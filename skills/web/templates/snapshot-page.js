@@ -132,6 +132,93 @@ async function snapshotPage(page, slug, snapshotDir, opts = {}) {
     const allInteractives = [...buttons, ...links, ...inputs, ...comboboxes];
     markExact(allInteractives);
 
+    // ── Multi-source URL harvest ───────────────────────────────────────────
+    // SPAs hide URLs in places <a href> can't reach: onClick handlers, router
+    // configs, and runtime pushState calls. Harvest from every source so the
+    // BFS frontier reflects what the app actually exposes.
+    //
+    // Provenance is recorded per-URL — the frontier gate uses it to validate
+    // candidates from low-signal sources (jschunk regex hits) before promoting
+    // them to ✅ explored.
+    const harvestedUrls = new Map(); // url → Set(provenance tags)
+    function addUrl(url, provenance) {
+      if (!url || typeof url !== 'string') return;
+      const trimmed = url.trim();
+      if (!trimmed) return;
+      // Normalize: ignore javascript:, mailto:, tel:, anchors-only-without-state
+      if (/^(javascript|mailto|tel|data):/i.test(trimmed)) return;
+      // Resolve relative to current origin
+      let resolved;
+      try { resolved = new URL(trimmed, location.href).href; } catch { return; }
+      // Same-origin only — cross-origin links are recorded separately, not crawled
+      const sameOrigin = new URL(resolved).origin === location.origin;
+      const key = resolved;
+      if (!harvestedUrls.has(key)) harvestedUrls.set(key, { provenance: new Set(), sameOrigin });
+      harvestedUrls.get(key).provenance.add(provenance);
+    }
+
+    // Source 1: <a href> in DOM (already handled by `links` extraction; mirror here for provenance)
+    document.querySelectorAll('a[href], area[href], [role=link][href]').forEach(el => addUrl(el.getAttribute('href'), 'dom-href'));
+
+    // Source 2: Programmatic nav handlers — scan inline onclick source for path literals
+    // Catches `onClick={() => navigate('/billing')}` / `onclick="location.href='/foo'"`
+    const PATH_RE = /['"`](\/[a-zA-Z][\w\-/]*(?:\?[\w=&\-]*)?(?:#[\w-]*)?)['"`]/g;
+    document.querySelectorAll('button, [role=button], [onclick]').forEach(el => {
+      const src = el.onclick?.toString() || el.getAttribute('onclick') || '';
+      if (!src) return;
+      let m;
+      while ((m = PATH_RE.exec(src))) addUrl(m[1], 'onclick-scan');
+    });
+
+    // Source 3a: Next.js / app router manifests
+    try {
+      const next = window.__NEXT_DATA__;
+      if (next?.page)         addUrl(next.page,         'router-config-next-page');
+      if (next?.props?.pageProps?.__lang) { /* noop, just shape probe */ }
+      if (window.__BUILD_MANIFEST?.sortedPages) {
+        for (const p of window.__BUILD_MANIFEST.sortedPages) addUrl(p, 'router-config-next-manifest');
+      }
+    } catch {}
+
+    // Source 3b: Generic JS-chunk regex over already-loaded scripts.
+    // Synchronous over performance entries; the actual fetch + scan is done
+    // outside page.evaluate (see post-eval block) for async handling.
+    const scriptUrls = [];
+    try {
+      for (const e of (performance.getEntriesByType?.('resource') || [])) {
+        if (e.initiatorType === 'script' && e.name && /\.js(\?|$)/.test(e.name)) {
+          scriptUrls.push(e.name);
+        }
+      }
+    } catch {}
+
+    // Source 4: Live pushState/replaceState interception.
+    // Install a no-op recorder; events are read by BFS via window.__qaPushStateLog.
+    // Idempotent: only install once per page lifecycle.
+    if (!window.__qaPushStateInstalled) {
+      window.__qaPushStateLog = window.__qaPushStateLog || [];
+      const origPush    = history.pushState;
+      const origReplace = history.replaceState;
+      history.pushState = function (state, title, url) {
+        try { window.__qaPushStateLog.push({ kind: 'push',    url: url || location.pathname, ts: Date.now() }); } catch {}
+        return origPush.apply(this, arguments);
+      };
+      history.replaceState = function (state, title, url) {
+        try { window.__qaPushStateLog.push({ kind: 'replace', url: url || location.pathname, ts: Date.now() }); } catch {}
+        return origReplace.apply(this, arguments);
+      };
+      window.__qaPushStateInstalled = true;
+    }
+    // Drain any pushState events accumulated since the last snapshot
+    for (const entry of (window.__qaPushStateLog || [])) addUrl(entry.url, `pushstate-${entry.kind}`);
+    window.__qaPushStateLog = [];
+
+    // Materialize harvested URLs for the return shape
+    const urlHarvest = [];
+    for (const [url, meta] of harvestedUrls.entries()) {
+      urlHarvest.push({ url, provenance: [...meta.provenance], sameOrigin: meta.sameOrigin });
+    }
+
     return {
       url:      location.href,
       title:    document.title,
@@ -147,8 +234,95 @@ async function snapshotPage(page, slug, snapshotDir, opts = {}) {
         role: d.getAttribute('role') || 'dialog',
         label: (d.querySelector('h1,h2,h3,h4')?.innerText || d.getAttribute('aria-label') || '').trim().slice(0, 80),
       })),
+      // Multi-source URL harvest (B3) — feeds the BFS frontier with provenance.
+      urlHarvest,
+      scriptUrls,
     };
   });
+
+  // ── Source 3b (continued): JS-chunk regex scan, run outside page.evaluate ───
+  // We fetch each loaded script's source via page.evaluate(fetch) and regex-scan
+  // for path literals. Hits are LOW-SIGNAL — the BFS gate validates each via
+  // page.goto before promoting from "candidate" to "explored". Cost is bounded
+  // by the count of script chunks (typically 5–30 per page).
+  const candidateUrls = [];
+  try {
+    const PATH_RE_GLOBAL = /['"`](\/[a-zA-Z][\w\-/]*(?:\?[\w=&\-]*)?(?:#[\w-]*)?)['"`]/g;
+    for (const scriptUrl of (captured.scriptUrls || []).slice(0, 20)) {
+      const src = await page.evaluate(async (u) => {
+        try {
+          const r = await fetch(u, { credentials: 'same-origin' });
+          if (!r.ok) return null;
+          const txt = await r.text();
+          // Cap each script to 2MB to avoid pathological bundles
+          return txt.slice(0, 2 * 1024 * 1024);
+        } catch { return null; }
+      }, scriptUrl).catch(() => null);
+      if (!src) continue;
+      const seen = new Set();
+      let m;
+      while ((m = PATH_RE_GLOBAL.exec(src))) {
+        const p = m[1];
+        // Filter obvious noise: image paths, locale codes, version strings
+        if (/\.(png|jpe?g|svg|gif|webp|ico|css|woff2?|ttf|eot|map|json)(\?|$)/i.test(p)) continue;
+        if (/^\/[a-z]{2}(?:-[A-Z]{2})?$/.test(p)) continue; // locale codes
+        if (seen.has(p)) continue;
+        seen.add(p);
+        try {
+          const resolved = new URL(p, captured.url).href;
+          candidateUrls.push({ url: resolved, provenance: ['jschunk-regex'], sameOrigin: true, candidate: true, sourceScript: scriptUrl });
+        } catch {}
+      }
+      // Cap candidates per page to prevent runaway harvesting
+      if (candidateUrls.length > 200) break;
+    }
+  } catch {}
+
+  // ── Sitemap + robots.txt — once per origin ──────────────────────────────────
+  // Cached via a sentinel file at qa/.sitemap-fetched-<origin>.json so we don't
+  // re-fetch on every snapshot. Same-origin only.
+  let sitemapUrls = [];
+  try {
+    const origin = new URL(captured.url).origin;
+    const cacheKey = path.resolve(snapshotDir, '..', `..${path.sep}.sitemap-${origin.replace(/[^\w]/g, '_')}.json`);
+    if (!fs.existsSync(cacheKey)) {
+      const fetched = await page.evaluate(async (origin) => {
+        const out = { sitemapUrls: [], robotsRules: [] };
+        for (const path of ['/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml']) {
+          try {
+            const r = await fetch(origin + path);
+            if (!r.ok) continue;
+            const txt = await r.text();
+            const matches = txt.match(/<loc>([^<]+)<\/loc>/g) || [];
+            for (const m of matches) {
+              const u = m.replace(/<\/?loc>/g, '').trim();
+              if (u) out.sitemapUrls.push(u);
+            }
+            if (out.sitemapUrls.length) break;
+          } catch {}
+        }
+        try {
+          const r = await fetch(origin + '/robots.txt');
+          if (r.ok) out.robotsRules = (await r.text()).split('\n').filter(l => /^(allow|disallow):/i.test(l));
+        } catch {}
+        return out;
+      }, origin).catch(() => ({ sitemapUrls: [], robotsRules: [] }));
+      try {
+        fs.writeFileSync(cacheKey, JSON.stringify(fetched, null, 2));
+      } catch {}
+      sitemapUrls = fetched.sitemapUrls.map(u => ({ url: u, provenance: ['sitemap'], sameOrigin: true }));
+    } else {
+      const cached = JSON.parse(fs.readFileSync(cacheKey, 'utf8'));
+      sitemapUrls = (cached.sitemapUrls || []).map(u => ({ url: u, provenance: ['sitemap'], sameOrigin: true }));
+    }
+  } catch {}
+
+  // Merge harvest sources into the captured payload for downstream consumers.
+  captured.urlHarvest = [
+    ...(captured.urlHarvest || []),
+    ...candidateUrls,
+    ...sitemapUrls,
+  ];
 
   const dom = captured;
 
