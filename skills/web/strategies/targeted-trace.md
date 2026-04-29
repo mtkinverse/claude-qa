@@ -191,6 +191,47 @@ The script **never throws**. Every failure path either:
 
 In every case, `qa/decisions.md` gets a new entry explaining what happened.
 
+### `findNextAction` — Required Priority Order
+
+The action-finding function MUST check conditions in this exact order. Reversing or reordering causes stall loops (e.g. clicking an unfilled submit button repeatedly instead of filling the form):
+
+```
+1. Auth-page context check (FIRST — before any CTA matching)
+   - If current URL matches /(login|signin|sign-in|signup|sign-up|register|account)/i
+     AND an email/password input is visible → return { type: 'auth' }
+   - This prevents the script from clicking the form's submit button bare-handed.
+
+2. Visible wizard / onboarding "Continue" or "Next" button
+   - Only match if it is ENABLED (not disabled) — disabled means a required selection is missing.
+
+3. Required form fields that are empty
+   - Detect via input[required]:not([value]), aria-required inputs
+   - Fill from .env.qa credentials (QA_TEST_EMAIL, QA_TEST_PASSWORD, etc.)
+
+4. Primary CTA button (sign-up, get-started, etc.)
+   - Only on non-auth pages.
+
+5. Any visible navigation item not yet visited
+   - Sidebar links, top nav tabs, user menu items.
+   - Mark each as visited after clicking to avoid re-clicking.
+
+6. null — no actionable element found; script exits cleanly.
+```
+
+### Post-login dashboard coverage — required additional pass
+
+When targeted-trace reaches a post-login dashboard (URL no longer matches the auth page), the funnel portion is complete. At this point:
+
+1. Save `storageState` to `qa/.auth/<role>.json`.
+2. **Do NOT stop.** Enumerate all navigation elements in the dashboard: sidebar links, tab bars, top-nav items, user menu items. Use the DOM/ARIA snapshot (`dom.links`, `dom.buttons` with nav/sidebar roles) to build the list.
+3. Click each nav item once, snapshot the resulting state, register in `crawl-todo.md`.
+4. For each panel: look for secondary actions (modals, expandable sections, sub-tabs) and click them too.
+5. Only stop when all nav items are visited OR a stall signal fires.
+
+This ensures the post-login surface is covered by targeted-trace even when BFS is not the primary strategy. If the dashboard is too large for a single targeted-trace run, log the decision and switch to BFS with `storageState` loaded.
+
 ### Adapt to What You See
 
-After every screenshot READ, if the app exposes interactions the default `findNextAction` heuristic missed (e.g. a custom carousel, a multi-select wizard step), update `qa/scripts/targeted-trace.js` and append a `qa/decisions.md` entry: `"Updated targeted-trace.js: added handler for <X> based on screenshot of step N"`.
+After every snapshot READ, if the app exposes interactions the default `findNextAction` heuristic missed (e.g. a custom carousel, a multi-select wizard step, an icon-only nav button), update `qa/scripts/targeted-trace.js` and append a `qa/decisions.md` entry: `"Updated targeted-trace.js: added handler for <X> based on snapshot of step N"`.
+
+**Never navigate to post-login routes via direct `page.goto()` hashes or sub-paths** without first interacting via the UI. Direct goto misses the interactive state of each panel. Always click the nav element, wait for the panel to render, then snapshot.
