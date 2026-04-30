@@ -21,7 +21,8 @@ Phase 1 creates EXACTLY these files and nothing else:
 | `flow-categories.md` | `qa/knowledgebase/` | W-2.9 |
 | `journey-inventory.md` | `qa/knowledgebase/` | W-6 |
 | `crawl-todo.md` | `qa/knowledgebase/` | W-2.5: URL discovery tracker |
-| `*.snapshot.json` | `qa/knowledgebase/aria-snapshots/` | W-2.5: per page |
+| `*.snapshot.json` | `qa/knowledgebase/aria-snapshots/` | W-2.5: per page (DOM/ARIA JSON) |
+| `*.png` | `qa/knowledgebase/screenshots/` | W-2.5: per page (visual fallback, sibling to JSON) |
 | `crawl-state.json` | `qa/` | W-2.5: BFS state |
 | `app-quirks.yml` | `qa/` | P1→P2 boundary: auto-derived (see `scripts/derive-quirks.js`) |
 | `decisions.md` | `qa/` | ongoing |
@@ -55,7 +56,9 @@ ls qa/context/ 2>/dev/null
 Confirm:
 - `.qa-config.json` has `"platform": "web"`
 - `QA_APP_URL` is set in `.env.qa`
-- `qa/knowledgebase/aria-snapshots/` exists (replaces `screenshots/` for discovery)
+- `qa/knowledgebase/aria-snapshots/` exists (per-page DOM/ARIA JSON — primary evidence)
+- `qa/knowledgebase/screenshots/` exists (per-page PNG — visual fallback only, sibling folder)
+- `qa/scripts/` exists — **every crawler / login / probe script Claude writes lives here and is invoked from here** (`node qa/scripts/<name>.js`). Never inline crawl logic into `node -e "..."` one-liners; the user has to be able to re-run any script standalone.
 
 > `init-workspace.js` already created all `qa/` subdirectories in Step 1.2. Do NOT run `mkdir` here — it is redundant and causes a spurious permission prompt.
 
@@ -162,7 +165,31 @@ Also write `qa/scripts/explore.js` as a dispatcher that `require()`s the chosen 
 > ```
 > Or verify first: `ls qa/ 2>/dev/null || echo MISSING`. Never `cd` into a directory without confirming it exists.
 
-For every page/step — **no image reading, no `Read` on PNGs**:
+### Timeout policy — fail fast on first probe, extend after fingerprint
+
+The first time the agent writes a crawl/login script for a new app, the selectors and waits are **guesses**. A probe that hangs for 60s+ on a wrong wait-condition burns time and tokens with no information. Tune timeouts so failure is cheap:
+
+| Phase of session | `page.goto` / `page.waitFor*` cap | Bash run timeout for the script |
+|---|---|---|
+| **First probe** (no successful snapshot yet on this app) | **30s** | `timeout: 60000` (1m) |
+| Post-fingerprint (≥1 successful snapshot, fingerprint written) | 30–60s, app-tuned | up to 3m |
+| Known-slow flows (uploads, payment, OAuth) | up to 90s | up to 5m, logged in `decisions.md` |
+
+Set `QA_NAV_TIMEOUT=30000` in `.env.qa` for the first probe. Bump it via `decisions.md` entry only after the first snapshot lands successfully. Rule of thumb: if the first probe takes longer than 30s, the script is wrong, not the app — **rewrite, don't wait.**
+
+### Reading ladder — JSON first, PNG only on stall
+
+`snapshotPage()` writes BOTH a `<slug>.snapshot.json` (under `aria-snapshots/`) and a `<slug>.png` (under the sibling `screenshots/`). The PNG exists as a **fallback for when JSON is insufficient** — never as the default evidence. Use this exact ladder:
+
+1. **Read the JSON.** Decide next action from `dom.buttons`, `dom.links`, `dom.headings`, `aria`, `dom.alerts`. 95% of pages resolve here.
+2. **Read the PNG only if (a) OR (b):**
+   - (a) `ariaFidelity === 'low'` for a page on the critical path (icon-only buttons with no `aria-label` — common React/Tailwind pattern), OR
+   - (b) **the script stalled on this page** — i.e. the outcome-classifier returned `unknown` / `form-reset-silent` / `no-state-change`, or two successive script revisions failed to advance state. PNG read at the second stall, not the first.
+3. **Ask the user only if the PNG also doesn't disambiguate** — with the slug, the URL, and what specifically you couldn't resolve.
+
+Whenever you read a PNG, append a one-line entry to `qa/decisions.md`: `"Read PNG <slug> — needed for <element/state>."` This keeps the budget visible.
+
+For every page/step — **JSON-first, PNG-on-stall**:
 
 1. Navigate / interact via Playwright (click, don't goto — see runtime.md §6).
 2. Wait `QA_PAGE_WAIT_MS`.
@@ -187,11 +214,7 @@ For every page/step — **no image reading, no `Read` on PNGs**:
    ```
    Use the same slug you pass to `snapshotPage()`. Modals, tabs, drawers, and wizard steps all count — if it has its own snapshot, it has its own crawl-todo row. The Phase 1 → Phase 2 gate will block until each is `✅` or `⛔`.
 
-   **Screenshot fallback (low ARIA fidelity)**: `snapshotPage()` writes a `.png` next to the `.snapshot.json` and computes an `ariaFidelity` field (`ok` | `low`). Do NOT `Read` the PNG by default — it burns tokens. Read it only when:
-   - `ariaFidelity === 'low'` for a page on the critical path (icon-only buttons with no `aria-label` — common React/Tailwind pattern), OR
-   - a flow asserts visual state that ARIA can't express (modal opened, toast appeared, layout regression).
-
-   When you do read a PNG to ground a label, log the decision in `qa/decisions.md` with the slug and the specific element you needed it for.
+   **Screenshot fallback**: see the **Reading ladder** above. PNGs live in `qa/knowledgebase/screenshots/` (sibling to `aria-snapshots/`); read them only on stall or low fidelity, and log the decision in `qa/decisions.md`.
 
 Shared session artefacts (all strategies):
 - `qa/knowledgebase/aria-snapshots/*.snapshot.json` — per visited state

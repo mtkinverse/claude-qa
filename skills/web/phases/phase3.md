@@ -2,12 +2,16 @@
 
 **Goal**: Mechanically transpile observed evidence into shippable Playwright code. **No prose re-derivation.** Selectors come from `uig.jsonl`; interaction sequences come from `trace.jsonl`; disambiguation comes from `app-quirks.yml`. The agent does not invent.
 
-**Inputs (read-only)**:
-- `qa/knowledgebase/uig.jsonl` — Interactable Graph (scope, role, name, exact, preconditions, effect)
-- `qa/flows/F-NNN-<slug>/trace.jsonl` — recorded actions for the flow
+**Inputs (read-only)** — read **both** the flow's `flow.md` AND its `scenarios.md` for every F-NNN. `scenarios.md` alone tells you *what* to ship; `flow.md` tells you *how the app actually behaved during discovery* — preconditions, auth context, observed waits, side effects, the URL path that worked. Skipping `flow.md` is the most common cause of generated tests that "look right" but fail at runtime because they miss a precondition or assume a navigation that needed a click.
+
+- `qa/flows/F-NNN-<slug>/flow.md` — **discovery evidence (REQUIRED)**: pages traversed, observed elements, auth/role context, preconditions hit, app quirks specific to this flow
 - `qa/flows/F-NNN-<slug>/scenarios.md` — *menu* of which traces to ship + any L4 contract assertions
+- `qa/flows/F-NNN-<slug>/trace.jsonl` — recorded actions for the flow (resolved selectors, click order, waits that worked)
+- `qa/knowledgebase/uig.jsonl` — Interactable Graph (scope, role, name, exact, preconditions, effect)
 - `qa/app-quirks.yml` — auto-derived disambiguation / toggle pairs / console allowlist / SPA query drops / overlay registry
 - `qa/knowledgebase/aria-snapshots/*.snapshot.json` — only when an L4 contract names a value to extract
+
+**Read order per flow**: `flow.md` → `scenarios.md` → `trace.jsonl` → emit. If `flow.md` and `scenarios.md` disagree (e.g. scenario assumes a precondition flow.md never observed), trust `flow.md` and either narrow the scenario or skip it with a `decisions.md` entry — never paper over the gap with invented setup code.
 
 **Outputs**:
 - `qa/flows/F-NNN-<slug>/F-NNN.scenarios.ts` — exported async scenario functions, each carrying a `.contract` sidecar
@@ -29,6 +33,7 @@ Runtime rules — see `skills/_shared/runtime.md`.
 4. **Every scenario exports a `.contract`.** No JSDoc-only entry/exit prose.
 5. **Layers L1+L2+L3 are emitted for every UIG-covered route.** L4 only when `qa/context/` has PRDs.
 6. **No per-app patterns.** If you find yourself wanting to write a quirk inline, instead append it to `qa/app-quirks.yml` and the transpiler picks it up.
+7. **Read `flow.md` AND `scenarios.md` for every F-NNN before emitting.** The flow file is discovery evidence (preconditions, auth context, side effects, observed waits). Scenarios alone are insufficient — they describe intent, not behavior. If you cannot cite the `flow.md` row that established a precondition, you cannot emit setup for it.
 
 ---
 

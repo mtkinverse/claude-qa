@@ -158,10 +158,15 @@ async function snapshotPage(page, slug, snapshotDir, opts = {}) {
   const unnamedRatio   = totalButtons ? unnamedButtons / totalButtons : 0;
   const ariaFidelity   = (unnamedButtons >= 3 || unnamedRatio >= 0.3) ? 'low' : 'ok';
 
-  // ── PNG fallback (unchanged — written but not Read by default) ───────────
+  // ── PNG fallback ─────────────────────────────────────────────────────────
+  // PNGs live in a SIBLING `screenshots/` directory, not next to the JSON.
+  // Reading order is JSON → PNG-on-stall (see phase1.md W-2.5), so keeping
+  // them physically separate makes `ls` of either folder unambiguous.
   let pngPath = null;
   if (opts.screenshot !== false) {
-    pngPath = path.join(snapshotDir, slug + '.png');
+    const screenshotDir = path.resolve(snapshotDir, '..', 'screenshots');
+    try { fs.mkdirSync(screenshotDir, { recursive: true }); } catch {}
+    pngPath = path.join(screenshotDir, slug + '.png');
     await page.screenshot({ path: pngPath, fullPage: false }).catch(() => { pngPath = null; });
   }
 

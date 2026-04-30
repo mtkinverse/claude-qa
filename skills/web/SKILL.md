@@ -31,7 +31,8 @@ Cross-cutting rules — read once at session start, cited from every phase:
 
 **Phase 1 — Discovery** (exploration only, NO test code):
 - `qa/knowledgebase/crawl-todo.md` — persistent URL TODO list (discovery + coverage tracking)
-- `qa/knowledgebase/aria-snapshots/*.snapshot.json` — DOM/ARIA capture per page
+- `qa/knowledgebase/aria-snapshots/*.snapshot.json` — DOM/ARIA capture per page (primary evidence)
+- `qa/knowledgebase/screenshots/*.png` — visual fallback per page (read only on stall / low ARIA fidelity)
 - `qa/knowledgebase/ui-inventory.md`, `nav-graph.md`, `roles.md`, `personas.md`
 - `qa/flows/F-NNN-<slug>/flow.md` — discovery evidence (steps, screenshots via DOM/ARIA, observed elements)
 - `qa/flows/F-NNN-<slug>/manifest.jsonl` — trace plan
@@ -63,7 +64,7 @@ No `TC-NNN-*.md` files anywhere. No `.ts` files before Phase 3.
 | `QA_PAGE_WAIT_MS` | `2000` | Min wait per page before snapshotting |
 | `QA_MAX_PAGES` | `50` | BFS page cap |
 | `QA_MAX_DEPTH` | `5` | Max click-depth from homepage |
-| `QA_NAV_TIMEOUT` | `15000` | `page.goto()` timeout (ms) |
+| `QA_NAV_TIMEOUT` | `30000` | `page.goto()` timeout (ms). **First probe**: keep at 30s — if it times out, the script is wrong, rewrite don't extend. Bump only after first successful snapshot, and log the change in `qa/decisions.md`. |
 | `QA_HEADLESS` | `true` | Set `false` to watch the browser |
 
 ---
@@ -90,6 +91,7 @@ Real files — copy at runtime, no edits required (they read `.env.qa` dynamical
 ## Key Rules (every phase)
 
 ### Correctness
+0. **All crawl/login/probe scripts live in `qa/scripts/` and run as `node qa/scripts/<name>.js`.** Never inline crawl logic into `node -e "..."` one-liners — the user must be able to re-run any script standalone.
 1. Never hardcode URLs — always `process.env.QA_APP_URL` or relative `'/'`.
 2. Never hardcode credentials — `process.env.QA_TEST_EMAIL` / `_PASSWORD`.
 3. Never use `networkidle` — use `domcontentloaded` + `QA_PAGE_WAIT_MS`.
