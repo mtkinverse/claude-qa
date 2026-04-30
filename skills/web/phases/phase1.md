@@ -14,6 +14,7 @@ Phase 1 creates EXACTLY these files and nothing else:
 | `flow.md` | `qa/flows/F-NNN-<slug>/flow.md` | W-3: one per feature area, discovery evidence only |
 | `manifest.jsonl` | `qa/flows/F-NNN-<slug>/manifest.jsonl` | W-3: step-by-step trace plan |
 | `trace.jsonl` | `qa/flows/F-NNN-<slug>/trace.jsonl` | W-2.5+: per-flow action recording, transpiled by Phase 3 |
+| *(branch flow)* | `qa/flows/F-NNN-<slug>-<branch>/` | branch flow created by replay-prefix.js when a fork point is detected (e.g. F-003-onboarding-continue/ and F-003-onboarding-skip/) |
 | `ui-inventory.md` | `qa/knowledgebase/` | W-2.5: ongoing, updated per page |
 | `nav-graph.md` | `qa/knowledgebase/` | W-2.5: ongoing |
 | `uig.jsonl` | `qa/knowledgebase/` | W-2.5: append-only Interactable Graph; primary input to Phase 3 |
@@ -141,15 +142,19 @@ Append to `qa/decisions.md`:
 
 ### W-2.4 — Write the runtime helper
 
-Copy the chosen strategy's skeleton into `qa/scripts/<strategy>.js`. Adapt selectors/wait heuristics to the fingerprint probe. Header comment is mandatory:
-
-```javascript
-// Why: <reason>
-// Strategy: <name — see skills/web/strategies/<name>.md>
-// Fallback: <different code path, not retry>
+Copy the chosen strategy template (do NOT write from scratch):
+```bash
+cp skills/web/templates/strategies/<strategy>.js qa/scripts/<strategy>.js
+cp skills/web/templates/strategies/explore.js   qa/scripts/explore.js
 ```
+Adapt the top `TARGET_URL`, `QA_DIR`, and timeout constants to the app fingerprint. The header comment (Why / Strategy / Fallback) is already in the template — update it.
 
-Also write `qa/scripts/explore.js` as a dispatcher that `require()`s the chosen helper.
+⛔ **HARD GATE**: Before proceeding to W-2.5, confirm both files exist:
+```bash
+ls qa/scripts/explore.js qa/scripts/<strategy>.js \
+  || { echo "W-2.4 gate FAILED — strategy scripts not written"; exit 1; }
+```
+Do not proceed to W-2.5 if this check fails.
 
 ### W-2.5 — Execute + DOM/ARIA snapshot + analyze
 
@@ -306,6 +311,32 @@ At end of strategy execution:
 - Login forms use `qa/scripts/login-engage.js` (skeleton: `skills/web/helpers/login-engage.md`). Direct fill+click is forbidden — it can't detect form-reset-silent failures.
 - Every interaction calls `qa/scripts/outcome-classifier.js` (skeleton: `skills/web/helpers/outcome-classifier.md`) and branches on the labeled outcome — never on legacy `stateChanged`.
 
+### Long-flow handoff protocol
+
+When a flow encounters a long-running async event (provisioning, email verification, OAuth callback) with an estimated wait > 5 minutes:
+
+1. **Write `qa/handoff.json`**:
+   ```json
+   {
+     "flow_id": "F-NNN",
+     "blocker": "short description of what we are waiting for",
+     "est_resume_at_iso": "UTC ISO timestamp when to resume",
+     "parallel_flows_running": ["F-001", "F-003"],
+     "last_step_cursor": "<step number in manifest>",
+     "observation_url": "URL where the blocking state was observed"
+   }
+   ```
+2. **Continue non-mutex flows** — keep authoring any flows in the interaction queue that do not depend on the blocked flow's outcome.
+3. **When only awaiting flows remain**, terminate with:
+   ```
+   ⏳ Resume after <est_resume_at_iso>. Flow <flow_id> is blocked on <blocker>.
+   Re-run /native-qa to continue from the handoff point.
+   ```
+
+`qa/handoff.json` is read by the Phase Evaluation dashboard (generate-report.js) and displayed as a yellow ⏳ banner with the resume time. It is also read at session start — if it exists, `qa/state.md` Active Position should reference it.
+
+See `skills/web/strategies/parallel-authoring.md` for the full parallel authoring contract.
+
 ---
 
 ## Step W-2.9: Role & Flow Inventory Confirmation Gate
@@ -448,10 +479,19 @@ Write/update `qa/knowledgebase/`:
   ```markdown
   | Flow ID | Name | Auth Required | Status | Snapshot Count | Notes |
   |---------|------|---------------|--------|----------------|-------|
-  | F-001   | Login & Registration | no | TRACED | 3 | sign-up default |
+  | F-001   | Login & Registration | no | TRACED-COMPLETE | 3 | sign-up default |
   ```
 
-  Valid statuses: `PENDING` (identified, not yet traced) → `TRACED` (Phase 1 done) → `DONE` (Phase 3 test written).
+  Valid statuses:
+  - `PENDING` — flow identified in `journey-inventory.md`, no `flow.md` written yet
+  - `TRACED-SURFACE` — `flow.md` exists but contains deferral markers ("deferred", "surface only", "not yet", "not opened") OR `interaction_exhaustion_ratio < 0.9`
+  - `TRACED-COMPLETE` — `flow.md` has zero deferral markers AND `interaction_exhaustion_ratio ≥ 0.9` (verified by `crawl-gate.js`)
+  - `DEFERRED` — exploration intentionally skipped (requires paid tier, external dependency, etc.) — must have a reason entry in `qa/decisions.md`
+  - `DONE` — Phase 3 test written and passing
+
+  ⚠️ `TRACED` (no suffix) is no longer valid. Use `TRACED-COMPLETE` or `TRACED-SURFACE`.
+
+  The P1→P2 gate (`crawl-gate.js`) blocks if any flow is `TRACED-SURFACE` without being explicitly promoted to `DEFERRED` in `qa/decisions.md`.
 
 - App quirks (SPA routes, redirect behavior, widget edge cases)
 
@@ -463,30 +503,27 @@ After Step W-6, do deferred housekeeping and run the deep-exploration gate befor
 
 ### 1. Update `journey-inventory.md`
 
-Batch-update all flows as TRACED or SKIPPED based on `qa/flows/`.
+Batch-update all flows as `TRACED-COMPLETE`, `TRACED-SURFACE`, or `DEFERRED` based on exhaustion ratio and deferral markers in `flow.md`.
 
-### 2. Snapshot fidelity + coverage gates
-
-Three scripts. **All must exit 0** before the deep-exploration gate. Any failure means the agent cannot proceed to Phase 2 without backfilling the inventory, re-capturing degenerate snapshots, or finishing pending crawl rows. Treat these like CI checks — do not interpret prose, run the scripts.
+### P1→P2 Gate — mandatory before Phase 2
 
 ```bash
-# Fidelity — every snapshot has real values, no null hrefs, no blank captures
-node scripts/audit-snapshots.js
-
-# Coverage — every snapshot is in ui-inventory.md AND in some flow.md
-node scripts/coverage-check.js
-
-# Crawl gate — zero ⬜ pending, zero 🔄 in-progress, every ⛔ skipped has a reason
-node scripts/crawl-gate.js
+bash scripts/run-p1-p2-gates.sh
 ```
+
+⛔ **If this exits non-zero, HALT Phase 1 completely. Do not proceed to Phase 2 until all four gates exit 0.** Surface the failing gate's output via `askUser`.
+
+After the gates pass, generate the Phase 1 evaluation report:
+```bash
+node scripts/allure/generate-report.js --phase 1 --open
+```
+(This line uses `;` in the gate runner so it fires even on failure — the user sees failures rendered in the browser rather than just a terminal halt.)
 
 If `crawl-gate.js` fails: do NOT proceed. Either explore each pending URL via the deep-exploration loop (step 3 below), or mark it `⛔ skipped` with an explicit reason via `update-crawl-todo.js --mark-skipped <url> --reason "<why>"`. Pending is never a terminal state.
 
 If `audit-snapshots.js` fails: re-capture any degenerate page (use the inspector to see what actually got recorded — `node scripts/inspect-snapshot.js <slug>`).
 
 If `coverage-check.js` fails: orphans on disk → add them to `ui-inventory.md` under the right flow; missing on disk → re-crawl those URLs.
-
-These two scripts replace the inline grep — they catch the failures screenshots used to expose visually.
 
 ### 3. Autonomous deep-exploration — exhaust all pending URLs before Phase 2
 

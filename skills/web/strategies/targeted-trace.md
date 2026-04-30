@@ -239,6 +239,8 @@ The action-finding function MUST check conditions in this exact order. Reversing
    - Mark each as visited after clicking to avoid re-clicking.
 
 6. null — no actionable element found; script exits cleanly.
+
+**Tiebreaker**: when two candidates are at equal priority, the one matching `DEPRIORITIZE` (`/skip|later|maybe|not.?now|dismiss/i`) loses. This prevents onboarding bypass from being chosen over primary paths when both are available.
 ```
 
 ### Post-login dashboard coverage — required additional pass

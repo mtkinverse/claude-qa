@@ -8,7 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 
-async function snapshotPage(page, slug, snapshotDir, opts = {}) {
+async function snapshotPage(page, slug, snapshotDir, opts = {}, provenance = null) {
   const aria = await page.locator('body').ariaSnapshot().catch(() => null);
 
   const captured = await page.evaluate(() => {
@@ -193,9 +193,9 @@ async function snapshotPage(page, slug, snapshotDir, opts = {}) {
         disabled: !!el.disabled,
         href: el.href || null,
         type: el.type || null,
-        // Filled in by BFS / wiggle-pass:
-        effect: null,
-        preconditions: [],
+        effect:       null,  // backfilled by trace-recorder.js after interaction
+        preconditions: [],   // backfilled by wiggle-pass.js for disabled CTAs
+        provenance:    provenance,   // null for normal snapshots; 'jit-backfill' for transpiler backfills
       });
     }
   }

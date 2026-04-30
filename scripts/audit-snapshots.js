@@ -147,6 +147,7 @@ if (issues.length || uigIssues.length) {
   if (uigIssues.length) {
     console.error(`\n❌ ${uigIssues.length} UIG uniqueness issues — refine scope or rename:`);
     uigIssues.forEach(i => console.error(`   ${i}`));
+    console.error('[audit-snapshots] UIG collision: N elements share the same scope+role+name. Transpiler cannot emit unambiguous selectors. Refine scope in snapshot-page.js before proceeding.');
   }
   process.exit(1);
 }

@@ -19,7 +19,11 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 export default defineConfig({
   testDir:       __dirname,
   testMatch:     ['tests/**/*.spec.ts', 'journeys/**/*.spec.ts'],
-  fullyParallel: false,  // journeys run sequentially (shared session)
+  // Runtime parallelism: OFF. Journeys share browser session state.
+  // Authoring parallelism (multiple flows discovered simultaneously) uses
+  // separate Playwright contexts per flow — NOT Playwright workers.
+  // See: skills/web/strategies/parallel-authoring.md
+  fullyParallel: false,
   forbidOnly:    CI,
   retries:       CI ? 2 : 0,
   workers:       CI ? 2 : 1,

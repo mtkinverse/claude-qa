@@ -57,6 +57,11 @@ After all rows terminal:
 node scripts/allure/generate-report.js --open
 ```
 
+After Phase 4 test run completes, generate the final session report:
+```bash
+node scripts/allure/generate-report.js --phase 4 --open
+```
+
 Tell the user:
 
 > "✅ All 4 phases complete. [N] flows, [N] scenarios, [N] passed / [N] failed. Report opened."

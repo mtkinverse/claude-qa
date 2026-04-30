@@ -2,6 +2,9 @@
 
 **Goal**: Mechanically transpile observed evidence into shippable Playwright code. **No prose re-derivation.** Selectors come from `uig.jsonl`; interaction sequences come from `trace.jsonl`; disambiguation comes from `app-quirks.yml`. The agent does not invent.
 
+> **Implementation**: `scripts/transpile-flow.js` implements this phase. Run: `node scripts/transpile-flow.js --all` to transpile all flows, or `--flow qa/flows/F-NNN-<slug>` for a single flow.
+> Grammar spec: `skills/web/references/manifest-grammar.md`
+
 **Inputs (read-only)** — read **both** the flow's `flow.md` AND its `scenarios.md` for every F-NNN. `scenarios.md` alone tells you *what* to ship; `flow.md` tells you *how the app actually behaved during discovery* — preconditions, auth context, observed waits, side effects, the URL path that worked. Skipping `flow.md` is the most common cause of generated tests that "look right" but fail at runtime because they miss a precondition or assume a navigation that needed a click.
 
 - `qa/flows/F-NNN-<slug>/flow.md` — **discovery evidence (REQUIRED)**: pages traversed, observed elements, auth/role context, preconditions hit, app quirks specific to this flow
@@ -255,5 +258,10 @@ Copy templates (no edits needed; they read `.env.qa` dynamically):
 
 **Phase boundary checkpoint** — heavy `qa/state.md`. Log:
 `"Phase 3 complete — [N] scenario modules, [N] standalone, [N] journeys. UIG rows: [M]. Quirks: [K]."`
+
+After transpile-flow.js has run on all flows, generate the Phase 3 report:
+```bash
+node scripts/allure/generate-report.js --phase 3 --open
+```
 
 → Next: [phase4.md](phase4.md)

@@ -33,7 +33,17 @@
       "Bash(curl -sI https://www.paio.bot/ --max-time 10)",
       "Bash(curl -sI https://paioclaw.ai/ --max-time 10)",
       "Bash(sed -i \"s/getByRole\\('button', { name: 'Sign in' }\\)/getByRole\\('button', { name: 'Sign in', exact: true }\\).last\\(\\)/g\" /home/taha/Desktop/claude-mac-qa-skills/qa/flows/F-003-authentication/F-003.scenarios.ts)",
-      "Bash(sed -i \"s/getByRole\\('button', { name: 'Sign up' }\\)/getByRole\\('button', { name: 'Sign up', exact: true }\\).last\\(\\)/g\" /home/taha/Desktop/claude-mac-qa-skills/qa/flows/F-003-authentication/F-003.scenarios.ts)"
+      "Bash(sed -i \"s/getByRole\\('button', { name: 'Sign up' }\\)/getByRole\\('button', { name: 'Sign up', exact: true }\\).last\\(\\)/g\" /home/taha/Desktop/claude-mac-qa-skills/qa/flows/F-003-authentication/F-003.scenarios.ts)",
+      "WebFetch(domain:paioclaw.ai)",
+      "Bash(curl -sL https://paioclaw.ai/ -o /tmp/paio.html -w \"HTTP %{http_code} bytes=%{size_download}\\\\n\" --max-time 15)",
+      "Read(//tmp/**)",
+      "Bash(grep -oE 'href=\"/[^\"]+\"|class=\"[^\"]{0,80}\"' /tmp/paio.html)",
+      "Bash(PROMOTION_CODE=PAIOFORFREE node qa/scripts/upgrade-probe.js)",
+      "Bash(tee qa/runs/last-run.log)",
+      "Bash(xdg-open playwright-report/index.html)",
+      "Bash(xargs -I {} sh -c 'echo \"=== {} ===\" && head -3 {}')",
+      "Bash(grep -E \"\\\\.js$\")",
+      "Bash(xargs basename *)"
     ]
   }
 }

@@ -63,4 +63,38 @@ if (issues.length) {
   process.exit(1);
 }
 
+// Check 4: Journey inventory status matches actual TRACED taxonomy
+// A flow with deferral markers in flow.md must not be labeled TRACED-COMPLETE
+const journeyInventoryPath = path.join(process.cwd(), 'qa', 'knowledgebase', 'journey-inventory.md');
+const flowsDir = path.join(process.cwd(), 'qa', 'flows');
+
+if (fs.existsSync(journeyInventoryPath) && fs.existsSync(flowsDir)) {
+  const inventoryText = fs.readFileSync(journeyInventoryPath, 'utf8');
+  const DEFERRAL_MARKERS = /deferred|surface only|not yet|not opened|not clicked|not expanded/i;
+  const flowDirs = fs.readdirSync(flowsDir).filter(d =>
+    fs.statSync(path.join(flowsDir, d)).isDirectory());
+
+  for (const flowDir of flowDirs) {
+    const flowMdPath = path.join(flowsDir, flowDir, 'flow.md');
+    if (!fs.existsSync(flowMdPath)) continue;
+    const flowMd = fs.readFileSync(flowMdPath, 'utf8');
+    const hasDeferral = DEFERRAL_MARKERS.test(flowMd);
+    // Check inventory row claims TRACED-COMPLETE despite deferral markers
+    const flowId = flowDir.match(/^(F-\d+)/)?.[1];
+    if (flowId && hasDeferral && inventoryText.includes(flowId) &&
+        inventoryText.includes('TRACED-COMPLETE')) {
+      const row = inventoryText.split('\n').find(l => l.includes(flowId));
+      if (row && row.includes('TRACED-COMPLETE')) {
+        console.error(`[coverage-check] FAIL: ${flowDir}/flow.md has deferral markers but journey-inventory.md claims TRACED-COMPLETE`);
+        console.error(`  Inventory row: ${row.trim()}`);
+        console.error(`  Either remove deferral markers or change status to TRACED-SURFACE`);
+        process.exitCode = 1;
+      }
+    }
+  }
+  if (!process.exitCode) {
+    console.log('[coverage-check] OK: all TRACED-COMPLETE flows have no deferral markers in flow.md');
+  }
+}
+
 console.log(`\n✅ Coverage check passed — every snapshot is inventoried and referenced by a flow`);

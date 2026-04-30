@@ -63,14 +63,16 @@ Each platform skill maps this hierarchy onto its tool's API.
 
 ## 6. Discovery Snapshot Protocol
 
-**Web platform**: Discovery uses DOM/ARIA snapshots — not screenshots.
+**Web platform**: Discovery uses DOM/ARIA snapshots primarily; PNGs are produced as siblings and read only via the JSON-first ladder in `skills/web/phases/phase1.md`.
 - After each navigation, call `snapshotPage()` (defined in `skills/web/SKILL.md` W-2.5) to write a `.snapshot.json` containing the ARIA accessibility tree + structured DOM extract (headings, inputs, buttons, links, images, alerts).
-- Never call raw `page.screenshot()` during Phase 1 or Phase 2 discovery. Screenshots are taken automatically by Playwright only on test failure during Phase 4 execution.
 - Visual artifacts (images, icons, badges, illustrations) are identified from `role="img"`, `alt` text, `aria-label`, and DOM class names in the snapshot — not by reading PNG files.
 - Name snapshots by ACTUAL URL slug, not intended destination — prevents hallucination on redirects.
 - Snapshot **AFTER** wait + verification (so it reflects settled state, not transitional).
 
 **macOS / native platforms**: continue using the platform's atomic capture wrapper (screencapture + accessibility API). This DOM/ARIA rule applies to web only.
+
+## Reading ladder
+See `skills/web/phases/phase1.md` — the ladder is the single source of truth. JSON first, PNG only on stall or low fidelity. Always log PNG reads in `qa/decisions.md`.
 
 ## 7. Session Limits
 
@@ -170,6 +172,6 @@ Default is headless. Set `QA_HEADLESS=false` in `.env.qa` to watch the browser w
 - `qa/classifier-log.jsonl`: append-only outcome trace, tail on resume.
 - `qa/state.md`: append per flow; full rewrite only at phase boundaries.
 - Runtime helper scripts: kept on disk; never regenerated cosmetically.
-- **No Read tool calls on PNG files during discovery** (web platform): DOM/ARIA snapshots are read as JSON — zero image-processing tokens. The only tool calls during Phase 1/2 are file reads on `.snapshot.json` and `.md` files.
+- **Read PNG files during discovery only when the JSON-first ladder triggers (low ARIA fidelity, stall, or ambiguity)** — see `skills/web/phases/phase1.md`. DOM/ARIA snapshots are the primary read target; PNG reads are the fallback and must be logged in `qa/decisions.md`.
 - `storageState` cached per role at `qa/.auth/<role>.json` — never re-login per flow.
 - **Journey specs are the single test artifact** (web platform): no TC markdown extraction step, no intermediate files. Phase 3 writes directly to `qa/journeys/`; Phase 4 runs them. No deduplication overhead.

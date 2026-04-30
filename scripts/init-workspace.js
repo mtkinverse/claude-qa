@@ -3,9 +3,11 @@
  * init-workspace.js — scaffold qa/ workspace from static templates.
  *
  * Usage:
- *   node scripts/init-workspace.js --framework <flow-based|feature-based|risk-based> --platform <macOS|web|windows|iOS|android>
+ *   node scripts/init-workspace.js --framework flow-based --platform <macOS|web|windows|iOS|android>
  *
  * Idempotent: rewrites READMEs and .qa-config.json; never deletes user data.
+ * Note: only flow-based layout is supported. Feature-based and risk-based layouts
+ * have been removed — all downstream tooling assumes flow-based.
  */
 
 const fs = require('fs');
@@ -19,9 +21,9 @@ function arg(flag, fallback = null) {
 const FRAMEWORK = arg('--framework', 'flow-based');
 const PLATFORM  = arg('--platform', 'web');
 
-const VALID_FRAMEWORKS = ['flow-based', 'feature-based', 'risk-based'];
+const VALID_FRAMEWORKS = ['flow-based'];
 if (!VALID_FRAMEWORKS.includes(FRAMEWORK)) {
-  console.error(`ERROR: --framework must be one of ${VALID_FRAMEWORKS.join(' | ')}`);
+  console.error(`ERROR: --framework must be "flow-based". Feature-based and risk-based layouts have been removed.`);
   process.exit(2);
 }
 
@@ -36,6 +38,7 @@ const COMMON_DIRS = [
   'journeys', 'tests',
   'context/feature-specs', 'context/figma-screens',
   'evidence', 'runs',
+  'journey-todo', '.auth',
 ];
 
 // macOS still needs planning/ for platforms.md; web does not
@@ -43,10 +46,10 @@ const PLATFORM_DIRS = {
   macos: ['planning'],
 };
 
+// Always create flows/ — flow-based is the only supported layout.
+// Feature-based and risk-based layouts have been removed.
 const FRAMEWORK_DIRS = {
-  'flow-based':    ['flows'],
-  'feature-based': ['features'],
-  'risk-based':    ['test-cases/P1-critical', 'test-cases/P2-high', 'test-cases/P3-medium', 'test-cases/P4-low'],
+  'flow-based': ['flows'],
 };
 
 // Source template → destination relative to qa/

@@ -24,10 +24,12 @@ class TraceRecorder {
    * @param {string} flowId  — e.g. "F-001-marketing-landing"
    * @param {object} [opts]
    * @param {string} [opts.flowsDir]  — defaults to "qa/flows"
+   * @param {string} [opts.uigPath]   — path to uig.jsonl for effect backfill; null disables
    */
-  constructor(flowId, opts = {}) {
-    this.flowId = flowId;
-    this.flowsDir = opts.flowsDir || 'qa/flows';
+  constructor(flowId, { flowsDir = 'qa/flows', uigPath = null } = {}) {
+    this.flowId   = flowId;
+    this.uigPath  = uigPath;
+    this.flowsDir = flowsDir;
     this.traceDir = path.join(this.flowsDir, flowId);
     this.tracePath = path.join(this.traceDir, 'trace.jsonl');
     this.t0 = Date.now();
@@ -49,13 +51,35 @@ class TraceRecorder {
   /**
    * Record an interaction. uig_ref is the canonical scope-prefixed identifier
    * from uig.jsonl: "<scope>>>${role}[${name}]" — e.g. "card[Pro]>>combobox#0".
+   * effect (optional) — observed effect object, e.g. { type: 'navigated' }.
+   *   When provided, the matching uig.jsonl row's effect field is backfilled.
    */
-  interaction({ action, uig_ref, target, outcome, evidence }) {
+  interaction({ action, uig_ref, target, outcome, evidence, effect = null }) {
     const row = { action, outcome };
     if (uig_ref) row.uig_ref = uig_ref;
     if (target) row.target = target;
     if (evidence !== undefined) row.evidence = evidence;
+    if (effect !== null) row.effect = effect;
     this._emit(row);
+
+    // After emitting the trace row, backfill the UIG row's effect field
+    if (uig_ref && effect && this.uigPath) {
+      try {
+        const lines = fs.readFileSync(this.uigPath, 'utf8').split('\n').filter(Boolean);
+        const updated = lines.map(line => {
+          try {
+            const row = JSON.parse(line);
+            if (row.slug === uig_ref && row.effect === null) {
+              return JSON.stringify({ ...row, effect: effect.type });
+            }
+          } catch {}
+          return line;
+        });
+        fs.writeFileSync(this.uigPath, updated.join('\n') + '\n');
+      } catch (e) {
+        process.stderr.write(`[trace-recorder] uig backfill failed: ${e.message}\n`);
+      }
+    }
   }
 
   /** Record an assertion that should be transpiled into expect() at this point in the flow. */

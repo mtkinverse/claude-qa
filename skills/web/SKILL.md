@@ -18,7 +18,7 @@ Phase 4: Test Execution    → phases/phase4.md
 Update Mode (W-13)         → phases/update-mode.md
 ```
 
-> ⛔ **WEB DISCOVERY USES NO SCREENSHOTS.** Phase 1/2 use `snapshotPage()` (DOM/ARIA JSON). Playwright takes screenshots only on test failure during Phase 4.
+📸 Web Phase 1/2 use a JSON-first ladder: DOM/ARIA snapshots are primary; PNG screenshots are fallback, read only on stall or low ARIA fidelity. See `skills/web/phases/phase1.md` — "Reading ladder" section.
 
 Cross-cutting rules — read once at session start, cited from every phase:
 - `skills/_shared/runtime.md` — engagement, checkpoints, context resets, navigation, token discipline, browser launch
@@ -45,6 +45,7 @@ Cross-cutting rules — read once at session start, cited from every phase:
 - `qa/tests/F-NNN-<slug>.spec.ts` — thin standalone wrappers
 - `qa/journeys/J-NNN-<role>.spec.ts` — sequential E2E journeys (shared session, `test.step()` chains)
 - `qa/journey-todo/J-NNN-<role>.todo.md` — generation + runtime tracking
+- `qa/journey-todo/J-NNN-*.todo.md` — pending journey backlog items (consumed by phase3.md and phase4.md)
 
 No `TC-NNN-*.md` files anywhere. No `.ts` files before Phase 3.
 
@@ -85,6 +86,13 @@ Real files — copy at runtime, no edits required (they read `.env.qa` dynamical
 | `package.json` | `qa/package.json` | After W-10 |
 | `flow.md` | `qa/flows/F-NNN-*/flow.md` | W-3 |
 | `scenarios.md` | `qa/flows/F-NNN-*/scenarios.md` | W-9 |
+| `strategies/bfs.js` | `qa/scripts/bfs.js` | W-2.4 — BFS discovery with full 8-step tick contract |
+| `strategies/targeted-trace.js` | `qa/scripts/targeted-trace.js` | W-2.4 — targeted-trace with DEPRIORITIZE tiebreaker |
+| `strategies/explore.js` | `qa/scripts/explore.js` | W-2.4 — strategy dispatcher |
+
+- `skills/web/templates/strategies/bfs.js` — BFS discovery with full 8-step tick contract; copy to qa/scripts/ at W-2.4
+- `skills/web/templates/strategies/targeted-trace.js` — targeted-trace with DEPRIORITIZE tiebreaker; copy to qa/scripts/ at W-2.4
+- `skills/web/templates/strategies/explore.js` — dispatcher; copy to qa/scripts/explore.js at W-2.4
 
 ---
 

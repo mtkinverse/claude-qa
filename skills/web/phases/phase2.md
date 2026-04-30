@@ -99,4 +99,9 @@ For each flow, read `flow.md` and generate ALL scenarios.
 
 **Phase boundary checkpoint**: write full `qa/state.md` (heavy template — runtime.md §3). Generate QA report. Log: `"Phase 2 complete — [N] scenarios across [N] flows."`
 
+After Phase 2 scenario authoring is complete, generate the Phase 2 report:
+```bash
+node scripts/allure/generate-report.js --phase 2 --open
+```
+
 → Next: [phase3.md](phase3.md)

@@ -15,7 +15,8 @@
  *   node scripts/crawl-gate.js --json   # machine-readable summary
  */
 
-const fs = require('fs');
+const fs   = require('fs');
+const path = require('path');
 
 const FILE = 'qa/knowledgebase/crawl-todo.md';
 const JSON_OUT = process.argv.includes('--json');
@@ -71,6 +72,36 @@ if (skippedNoReason.length) {
 if (fail) {
   console.error(`\nGate FAILED. Phase 1 not complete.`);
   process.exit(1);
+}
+
+// Interaction exhaustion ratio check
+const stateFile = path.join(process.cwd(), 'qa', 'knowledgebase', 'interactions-state.json');
+const threshold = parseFloat(process.env.INTERACTIONS_RATIO_THRESHOLD || '0.7');
+
+if (fs.existsSync(stateFile)) {
+  let state;
+  try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); }
+  catch { state = null; }
+
+  if (state) {
+    const exploredCount = Object.keys(state.explored).length;
+    const queueCount    = state.queue.length;
+    const total         = exploredCount + queueCount;
+    const ratio         = total > 0 ? exploredCount / total : 1;
+
+    if (ratio < threshold) {
+      console.error(`[crawl-gate] FAIL: interaction exhaustion ratio ${ratio.toFixed(2)} < ${threshold}`);
+      console.error(`  Explored: ${exploredCount} / ${total} interactives`);
+      console.error(`  ${queueCount} elements remain unexplored in interactions-state.json`);
+      console.error(`  Set INTERACTIONS_RATIO_THRESHOLD env var to lower the bar, or explore more.`);
+      process.exit(1);
+    } else {
+      console.log(`[crawl-gate] OK: interaction ratio ${ratio.toFixed(2)} >= ${threshold} (${exploredCount}/${total})`);
+    }
+  }
+} else {
+  console.warn('[crawl-gate] interactions-state.json not found — skipping ratio check');
+  console.warn('  Run update-interactions-state.js --discover-from-uig after Phase 1 to generate it.');
 }
 
 console.log(`\n✅ Gate PASSED. Safe to enter Phase 2.`);

@@ -41,6 +41,8 @@ Agent flow on detecting `qa/pending-question.md`: read → `AskUserQuestion` →
 
 Once the agent enters a flow (first line appended to `qa/flows/F-NNN-*/manifest.jsonl`), it MUST drive every manifest step to terminal status (`done` / `skipped(reason)` / `blocked(reason)`) before moving on. The manifest — not the user — is the source of truth for "what's left."
 
+> **Exception — parallel authoring**: Multiple non-mutex flows MAY be authored in parallel via separate Playwright contexts. Each flow owns its `manifest.jsonl`, `trace.jsonl`, and per-flow storageState (`qa/.auth/F-NNN.json`). The sequential mandate above applies *within* a single flow. Cross-flow parallelism is governed by `skills/web/strategies/parallel-authoring.md`.
+
 - "Asking the user what's remaining" is not a valid terminal action. Consult the manifest.
 - Legitimate mid-flow pauses are limited to:
   1. Classifier returns `error-surfaced` / `auth-rejected-server` / `form-reset-silent` / `network-timeout` → `AskUserQuestion` with evidence, then resume.

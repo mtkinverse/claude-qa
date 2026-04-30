@@ -115,7 +115,7 @@ async function wigglePass(page, args, opts = {}) {
         role: disabledTarget.role,
         name: disabledTarget.name,
         exact: !!disabledTarget.exact,
-        preconditionsUpdated: preconditions,
+        preconditions: preconditions,
         wiggleEvidence: evidence,
       }) + '\n');
     }

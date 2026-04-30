@@ -550,6 +550,16 @@ const SAFE_NAV = /view|open|go.to|see.all|see.more|more|details|explore|
   learn|visit|show|browse|discover|manage|dashboard|settings|profile|
   upgrade|pricing|docs|help|support|about/i;
 
+// Labels that are intentionally last-priority (not destructive, but deprioritised)
+const DEPRIORITIZE = /skip|later|maybe|not.?now|dismiss|set.?up.?later|i'?ll.?do.?this.?later/i;
+```
+
+**DEPRIORITIZE** (never the first pick when any other actionable element exists):
+```javascript
+const DEPRIORITIZE = /skip|later|maybe|not.?now|dismiss|set.?up.?later|i'?ll.?do.?this.?later/i;
+```
+Selection priority: SAFE_NAV match → unmatched neutral button → DEPRIORITIZE match → DANGEROUS (existing). A DEPRIORITIZE button is explored last — it is not in the DANGEROUS list (not destructive) but it is intentionally last-priority.
+
 // Only scan nav and header — never click random buttons in main content
 const navButtons = await page.locator('nav, header').first()
   .locator('button, [role="link"]:not(a), [role="menuitem"]:not(a)').all();

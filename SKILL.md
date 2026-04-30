@@ -1,7 +1,7 @@
 ---
 name: native-qa
 description: >
-  Multi-platform QA skill (macOS, Web, Windows, iOS, Android). Selects platform → initializes workspace → discovers UI → generates scenarios → writes shippable tests → runs them. Web uses DOM/ARIA snapshots (no screenshots in Phase 1/2). macOS uses screenshots at every step. Never generates TCs before credentials are confirmed.
+  Multi-platform QA skill (macOS, Web, Windows, iOS, Android). Selects platform → initializes workspace → discovers UI → generates scenarios → writes shippable tests → runs them. Web Phase 1/2 use the JSON-first ladder (DOM/ARIA snapshots primary, PNG fallback). macOS uses screenshots at every step. Never generates TCs before credentials are confirmed.
 ---
 
 # Native App QA Skill — Root Router
@@ -10,7 +10,7 @@ Asks for the platform first, scaffolds a typed workspace, hands off to the platf
 
 **Platforms**: macOS ✅ | Web (Playwright) ✅ | Windows 🔜 | iOS 🔜 | Android 🔜
 
-> ⛔ **WEB DISCOVERY USES NO SCREENSHOTS.** Phase 1/2 use `snapshotPage()` (DOM/ARIA JSON). macOS/native use screenshots normally. Playwright takes screenshots only on test failure during Phase 4.
+Web Phase 1/2 use the JSON-first ladder — see `skills/web/phases/phase1.md` (Reading ladder section).
 
 Cross-cutting runtime rules live in `skills/_shared/runtime.md` — engagement, checkpoints, context resets, navigation, token discipline, browser launch. Read once at session start; every phase cites it.
 
@@ -62,7 +62,7 @@ If `qa/state.md` exists, read it. Extract: app name, phase, next action, flows d
 
 ```bash
 if [ ! -d "qa" ] || [ ! -f "qa/.qa-config.json" ]; then echo "INIT"
-elif [ ! -d "qa/flows" ] && [ ! -d "qa/features" ] && [ ! -d "qa/test-cases/P1-critical" ]; then echo "CONFIGURED_NO_FLOWS"
+elif [ ! -d "qa/flows" ]; then echo "CONFIGURED_NO_FLOWS"
 else
   SPEC_COUNT=$(find qa/tests qa/journeys -name "*.spec.ts" 2>/dev/null | wc -l | tr -d ' ')
   MODULE_COUNT=$(find qa/flows -name "*.scenarios.ts" 2>/dev/null | wc -l | tr -d ' ')
@@ -87,18 +87,18 @@ fi
 
 ### 1.1 Framework Selection
 
-> "Welcome to native-qa! How would you like your test cases organized?
+> "Welcome to native-qa! Your workspace will use the flow-based layout:
 >
-> 1. **Flow-based** *(recommended)* — `qa/flows/F-001-login/`, `F-002-settings/`, …
-> 2. **Feature-based** — `qa/features/authentication/`, `dashboard/`, …
-> 3. **Risk-based** — `qa/test-cases/P1-critical/`, `P2-high/`, …"
+> 1. **Flow-based** — `qa/flows/F-001-login/`, `F-002-settings/`, …"
 
-**STOP** until user replies. Default to flow-based if unclear. Map answer → `flow-based` | `feature-based` | `risk-based`.
+(Feature-based and Risk-based layouts removed — all downstream tooling assumes flow-based.)
+
+**STOP** until user confirms or says "continue". Always uses `flow-based`.
 
 ### 1.2 Scaffold
 
 ```bash
-node scripts/init-workspace.js --framework <chosen> --platform <chosen>
+node scripts/init-workspace.js --framework flow-based --platform <chosen>
 ```
 
 This creates `qa/` + all subdirectories + all READMEs + `qa/.qa-config.json` from `scripts/templates/readmes/`. Idempotent. On failure, surface via `AskUserQuestion` per engagement protocol.

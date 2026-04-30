@@ -36,6 +36,8 @@ const SCREENSHOTS_DIR = path.join(QA_DIR, 'knowledgebase', 'screenshots');
 const args = process.argv.slice(2);
 const outIdx = args.indexOf('--out');
 const OPEN = args.includes('--open');
+const phaseIdx = args.indexOf('--phase');
+const PHASE = phaseIdx !== -1 ? args[phaseIdx + 1] : 'all';
 
 function slugify(s) {
   return String(s || 'app').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'app';
@@ -71,8 +73,8 @@ function escHtml(s) {
 function readConfig() {
   const p = path.join(QA_DIR, '.qa-config.json');
   if (!fs.existsSync(p)) {
-    console.error('  ERROR: qa/.qa-config.json not found. Run the QA skill first.');
-    process.exit(1);
+    console.error('  WARNING: qa/.qa-config.json not found. Using defaults.');
+    return { app_name: 'Unknown Product', platform: 'Unknown' };
   }
   return JSON.parse(fs.readFileSync(p, 'utf8'));
 }
@@ -247,10 +249,148 @@ function screenshotToBase64(filename) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase Evaluation Panel
+// ---------------------------------------------------------------------------
+
+function buildPhaseEvaluation(phase) {
+  const phaseLabel = phase === 'all' ? 'Session' : `Phase ${phase}`;
+
+  // Gather done counts
+  let snapCount = 0, uigRows = 0, tracedComplete = 0, tracedSurface = 0, deferred = 0;
+  let exploredRatio = null;
+
+  try {
+    const snapDir = 'qa/knowledgebase/aria-snapshots';
+    if (fs.existsSync(snapDir)) snapCount = fs.readdirSync(snapDir).filter(f => f.endsWith('.json')).length;
+  } catch {}
+
+  try {
+    const uigPath = 'qa/knowledgebase/uig.jsonl';
+    if (fs.existsSync(uigPath)) uigRows = fs.readFileSync(uigPath, 'utf8').split('\n').filter(Boolean).length;
+  } catch {}
+
+  const DEFERRAL = /deferred|surface only|not yet|not opened|not clicked|not expanded/i;
+  try {
+    const flowsDir = 'qa/flows';
+    if (fs.existsSync(flowsDir)) {
+      fs.readdirSync(flowsDir).forEach(d => {
+        const fmd = path.join(flowsDir, d, 'flow.md');
+        if (!fs.existsSync(fmd)) { deferred++; return; }
+        const txt = fs.readFileSync(fmd, 'utf8');
+        if (DEFERRAL.test(txt)) tracedSurface++;
+        else tracedComplete++;
+      });
+    }
+  } catch {}
+
+  try {
+    const isPath = 'qa/knowledgebase/interactions-state.json';
+    if (fs.existsSync(isPath)) {
+      const st = JSON.parse(fs.readFileSync(isPath, 'utf8'));
+      const exp = Object.keys(st.explored || {}).length;
+      const q   = (st.queue || []).length;
+      exploredRatio = exp + q > 0 ? `${exp}/${exp+q} (${Math.round(100*exp/(exp+q))}%)` : 'N/A';
+    }
+  } catch {}
+
+  // Run gates
+  const gates = [
+    { name: 'audit-snapshots', script: 'scripts/audit-snapshots.js' },
+    { name: 'coverage-check',  script: 'scripts/coverage-check.js'  },
+    { name: 'crawl-gate',      script: 'scripts/crawl-gate.js'       },
+    { name: 'derive-quirks',   script: 'scripts/derive-quirks.js'    },
+  ];
+  const gateResults = gates.map(g => {
+    try {
+      execSync(`node ${g.script}`, { stdio: 'pipe', timeout: 30000 });
+      return { name: g.name, pass: true, msg: '' };
+    } catch (e) {
+      const msg = (e.stderr || e.stdout || '').toString().split('\n')[0].slice(0, 200);
+      return { name: g.name, pass: false, msg };
+    }
+  });
+
+  // Check for surface-only flows
+  const deferredFlows = [];
+  try {
+    const flowsDir = 'qa/flows';
+    if (fs.existsSync(flowsDir)) {
+      fs.readdirSync(flowsDir).forEach(d => {
+        const fmd = path.join(flowsDir, d, 'flow.md');
+        if (fs.existsSync(fmd) && DEFERRAL.test(fs.readFileSync(fmd, 'utf8'))) {
+          deferredFlows.push(d);
+        }
+      });
+    }
+  } catch {}
+
+  // Handoff banner
+  let handoffHtml = '';
+  try {
+    const hf = 'qa/handoff.json';
+    if (fs.existsSync(hf)) {
+      const h = JSON.parse(fs.readFileSync(hf, 'utf8'));
+      const parallel = (h.parallel_flows_running || []).length;
+      handoffHtml = `<div style="background:#fffbe6;border:1px solid #faad14;padding:12px;border-radius:4px;margin:8px 0">
+        &#x23F3; <strong>Resume after ${escHtml(h.est_resume_at_iso || 'unknown time')}</strong> — Flow <code>${escHtml(String(h.flow_id || ''))}</code> blocked on <em>${escHtml(String(h.blocker || ''))}</em>.
+        ${parallel > 0 ? `${parallel} other flow(s) ran in parallel.` : ''}
+      </div>`;
+    }
+  } catch {}
+
+  // Next action from state.md
+  let nextHtml = '<em>No qa/state.md found</em>';
+  try {
+    const statePath = 'qa/state.md';
+    if (fs.existsSync(statePath)) {
+      const txt = fs.readFileSync(statePath, 'utf8');
+      const ap  = txt.match(/##\s*Active Position[\s\S]*?(?=##|$)/i);
+      if (ap) nextHtml = `<pre style="white-space:pre-wrap;font-size:12px">${ap[0].replace(/</g,'&lt;')}</pre>`;
+      else nextHtml = `<pre style="white-space:pre-wrap;font-size:12px">${txt.slice(0, 500).replace(/</g,'&lt;')}...</pre>`;
+    }
+  } catch {}
+
+  const failGates = gateResults.filter(g => !g.pass);
+  const passGates = gateResults.filter(g => g.pass);
+
+  return `
+  <div style="margin:16px 0;font-family:sans-serif">
+    <h2 style="border-bottom:2px solid #1890ff;padding-bottom:8px">${escHtml(phaseLabel)} Evaluation</h2>
+    ${handoffHtml}
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+      <div style="background:#f6ffed;border:1px solid #b7eb8f;padding:12px;border-radius:4px">
+        <h3 style="color:#389e0d;margin-top:0">&#x2705; Done</h3>
+        <ul style="margin:0;padding-left:20px">
+          <li>Snapshots: <strong>${snapCount}</strong></li>
+          <li>UIG rows: <strong>${uigRows}</strong></li>
+          <li>TRACED-COMPLETE: <strong>${tracedComplete}</strong></li>
+          <li>TRACED-SURFACE: <strong>${tracedSurface}</strong></li>
+          <li>DEFERRED: <strong>${deferred}</strong></li>
+          ${exploredRatio ? `<li>Interactions explored: <strong>${exploredRatio}</strong></li>` : ''}
+          ${passGates.map(g => `<li>Gate ${escHtml(g.name)}: <strong>PASS</strong></li>`).join('')}
+        </ul>
+      </div>
+      <div style="background:${failGates.length > 0 ? '#fff1f0' : '#f5f5f5'};border:1px solid ${failGates.length > 0 ? '#ffa39e' : '#d9d9d9'};padding:12px;border-radius:4px">
+        <h3 style="color:${failGates.length > 0 ? '#cf1322' : '#595959'};margin-top:0">${failGates.length > 0 ? '&#x274C; Failing / Missing' : '&#x2705; No failures'}</h3>
+        ${failGates.map(g => `<div style="background:#fff2f0;border-left:3px solid #ff4d4f;padding:8px;margin:4px 0">
+          <strong>${escHtml(g.name)}</strong><br><code style="font-size:11px">${g.msg.replace(/</g,'&lt;')}</code>
+        </div>`).join('')}
+        ${deferredFlows.length > 0 ? `<div><strong>Surface-only flows:</strong><ul>${deferredFlows.map(f => `<li>${escHtml(f)}</li>`).join('')}</ul></div>` : ''}
+        ${failGates.length === 0 && deferredFlows.length === 0 ? '<p>All gates pass. No surface-only flows.</p>' : ''}
+      </div>
+      <div style="background:#e6f7ff;border:1px solid #91d5ff;padding:12px;border-radius:4px">
+        <h3 style="color:#096dd9;margin-top:0">&#x27A1;&#xFE0F; Next</h3>
+        ${nextHtml}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ---------------------------------------------------------------------------
 // HTML Report Builder
 // ---------------------------------------------------------------------------
 
-function buildHtml(config, flowEntries, counts, coverage) {
+function buildHtml(config, flowEntries, counts, coverage, phase) {
   const appName = escHtml(config.app_name || 'Unknown Product');
   const platform = escHtml(config.platform || 'Unknown');
   const now = new Date().toISOString().replace('T', ' ').split('.')[0];
@@ -406,6 +546,8 @@ function buildHtml(config, flowEntries, counts, coverage) {
 <h1>QA Report — ${appName}</h1>
 <div class="subtitle">${platform} &middot; Generated ${now} &middot; ${os.hostname()}</div>
 
+${buildPhaseEvaluation(phase)}
+
 <div class="stats">
   <div class="stat">
     <div class="stat-label">Flows</div>
@@ -484,12 +626,12 @@ function main() {
   const appName = config.app_name || 'Unknown Product';
   console.log(`  Product:  ${appName}`);
   console.log(`  Platform: ${config.platform || 'Unknown'}`);
+  console.log(`  Phase:    ${PHASE}`);
 
   const flowEntries = findFlowDirs();
   if (flowEntries.length === 0) {
     console.log('  No flow directories found in qa/flows/ or qa/features/.');
-    console.log('  Run the QA skill first.');
-    process.exit(1);
+    console.log('  Generating report with phase evaluation only.');
   }
 
   // Collect counts
@@ -542,7 +684,7 @@ function main() {
   fs.mkdirSync(path.dirname(OUTPUT_PATH), { recursive: true });
 
   // Generate HTML
-  const html = buildHtml(config, flowEntries, counts, coverage);
+  const html = buildHtml(config, flowEntries, counts, coverage, PHASE);
   fs.writeFileSync(OUTPUT_PATH, html);
 
   console.log('');
